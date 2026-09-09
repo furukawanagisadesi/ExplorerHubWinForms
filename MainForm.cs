@@ -90,7 +90,6 @@ public sealed class MainForm : Form
         _tray.DoubleClick += (_, _) => ShowMainWindow();
 
         KeyDown += OnMainKeyDown;
-        Resize += OnMainResize;
         FormClosing += OnMainFormClosing;
         _watcher.WindowAbsorbed += OnWindowAbsorbed;
 
@@ -210,15 +209,6 @@ public sealed class MainForm : Form
         }
     }
 
-    private void OnMainResize(object? sender, EventArgs e)
-    {
-        if (WindowState == FormWindowState.Minimized && !_exiting && !IsDisposed && !Disposing)
-        {
-            Hide();
-            _tray.ShowBalloonTip(1000, "ExplorerHub", "已最小化到后台运行", ToolTipIcon.Info);
-        }
-    }
-
     private void OnMainFormClosing(object? sender, FormClosingEventArgs e)
     {
         if (_exiting)
@@ -226,9 +216,23 @@ public sealed class MainForm : Form
             return;
         }
 
-        // 点关闭按钮时隐藏到托盘, 而不是退出程序。
+        // 点关闭按钮时隐藏到托盘(缩略图标), 而不是退出程序。
         e.Cancel = true;
         Hide();
+    }
+
+    /// <summary>
+    /// 处理单实例广播: 第二个实例启动时会 PostMessage 此消息, 这里把主窗口重新显示并激活。
+    /// </summary>
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == Program.ShowMainWindowMessageId)
+        {
+            ShowMainWindow();
+            return;
+        }
+
+        base.WndProc(ref m);
     }
 
     private void ShowMainWindow()
