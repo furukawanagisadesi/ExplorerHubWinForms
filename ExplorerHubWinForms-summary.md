@@ -66,11 +66,13 @@ ExplorerHubWinForms/
 
 ### 3.5 `ExplorerTabPage.cs`（单个标签页）
 - 继承 `TabPage`。
-- 持有：`ExplorerBrowser _browser`（`Dock=Fill`）、导航工具栏（后退/前进/上一级/刷新/地址框）。
+- 持有：`ExplorerBrowser _browser`（`Dock=Fill`）、导航工具栏（后退/前进/上一级/刷新/地址框/复制路径）。
 - 构造时接收 `ShellObject? initialTarget`，默认会导航到目标；无法导航时静默（`showError=false`）。
 - `TryNavigate(target, showError)`：包裹 `ExplorerBrowser.Navigate`，`CommonControlException` 等会被捕获，`showError=true` 时弹窗。
 - `UpdateNavigationState()`：根据 `NavigationLog` 刷新后退/前进/上一级按钮状态和标签标题/地址。
 - 地址框回车：把文本 `ShellObject.FromParsingName` 后导航，失败弹窗。
+- **地址框（`_address`，`ToolStripTextBox`）**：`AutoSize=false`、`Width=900`，占据工具栏剩余可用宽度的主体（纯固定宽度，不做自动拉伸布局）。
+- **复制路径按钮（`_copyPath`，本次新增）**：工具栏里地址框右侧，两者之间用 `ToolStripSeparator()` 留出空隙。点击调用 `CopyCurrentPath()`——把地址框当前显示的路径复制到剪贴板；文本为空则不做任何事，剪贴板访问失败时弹窗提示。
 - 刷新：重新导航到当前目录（`NavigateLogLocation` 到相同索引是空操作，需重导航）。
 - **`Dispose`（本次修复）**：除了取消 `NavigationLogChanged` / `NavigationComplete` 事件，还调用 `Application.RemoveMessageFilter(_browser)`——见下方第 4 节崩溃根因。
 

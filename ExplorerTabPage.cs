@@ -15,6 +15,7 @@ public sealed class ExplorerTabPage : TabPage
     private readonly ToolStripButton _up;
     private readonly ToolStripButton _refresh;
     private readonly ToolStripTextBox _address;
+    private readonly ToolStripButton _copyPath;
 
     public ExplorerBrowser Browser => _browser;
 
@@ -38,8 +39,13 @@ public sealed class ExplorerTabPage : TabPage
         _address = new ToolStripTextBox
         {
             AutoSize = false,
-            Width = 520,
+            Width = 900,
             ToolTipText = "输入路径后回车导航",
+        };
+        _copyPath = new ToolStripButton("复制路径")
+        {
+            DisplayStyle = ToolStripItemDisplayStyle.Text,
+            ToolTipText = "复制当前路径到剪贴板",
         };
 
         var toolStrip = new ToolStrip
@@ -56,6 +62,8 @@ public sealed class ExplorerTabPage : TabPage
             _refresh,
             new ToolStripSeparator(),
             _address,
+            new ToolStripSeparator(),   // 地址栏与复制按钮之间的空隙
+            _copyPath,
         });
 
         Controls.Add(_browser);
@@ -66,6 +74,7 @@ public sealed class ExplorerTabPage : TabPage
         _up.Click += (_, _) => NavigateUp();
         _refresh.Click += (_, _) => RefreshView();
         _address.KeyDown += OnAddressKeyDown;
+        _copyPath.Click += (_, _) => CopyCurrentPath();
 
         TryNavigate(initialTarget, showError: false);
     }
@@ -155,6 +164,29 @@ public sealed class ExplorerTabPage : TabPage
         catch (Exception ex)
         {
             MessageBox.Show(this, $"无法导航到 \"{text}\"\r\n\r\n{ex.Message}", "错误",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>
+    /// 把当前浏览位置复制到剪贴板。
+    /// 优先用地址栏显示的文本(FileSystem 路径或 shell 显示名); 取不到则退出, 避免复制到空串。
+    /// </summary>
+    private void CopyCurrentPath()
+    {
+        var text = _address.Text.Trim();
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Clipboard.SetText(text);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"复制路径失败。\r\n\r\n{ex.Message}", "错误",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
