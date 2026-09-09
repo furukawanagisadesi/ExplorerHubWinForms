@@ -165,6 +165,13 @@ public sealed class ExplorerTabPage : TabPage
         {
             _browser.NavigationLog.NavigationLogChanged -= OnNavigationLogChanged;
             _browser.NavigationComplete -= OnNavigationComplete;
+
+            // WindowsAPICodePack 的 ExplorerBrowser 在创建句柄时会把自己注册为
+            // Application.AddMessageFilter(this)(IMessageFilter), 但 Dispose 并不会反过来
+            // RemoveMessageFilter。Tint 关闭标签页后, 那个已释放的 ExplorerBrowser 仍留在
+            // 全局消息过滤器链中, 消息循环泵下一帧时 IsMessageForExplorerBrowser() 访问
+            // Control.Handle 就会抛 ObjectDisposedException。这里必须在释放控制前把它移除。
+            Application.RemoveMessageFilter(_browser);
         }
 
         base.Dispose(disposing);

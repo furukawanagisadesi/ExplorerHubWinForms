@@ -54,6 +54,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
     private IntPtr _winEventHook;
     private dynamic? _shell;
     private int _retriesLeft;
+    private bool _disposed;
 
     public event EventHandler<ExplorerWindowAbsorbedEventArgs>? WindowAbsorbed;
 
@@ -66,6 +67,11 @@ public sealed class ExplorerWindowWatcher : IDisposable
         _debounceTimer = new System.Windows.Forms.Timer { Interval = 80 };
         _debounceTimer.Tick += (_, _) =>
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _debounceTimer.Stop();
             var absorbed = Poll(absorbNew: true);
 
@@ -78,13 +84,26 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
         // 低频兜底: 补上钩子可能漏掉的窗口(后台创建、Explorer 重启等)。
         _fallbackTimer = new System.Windows.Forms.Timer { Interval = 3000 };
-        _fallbackTimer.Tick += (_, _) => Poll(absorbNew: true);
+        _fallbackTimer.Tick += (_, _) =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            Poll(absorbNew: true);
+        };
 
         _winEventDelegate = OnForegroundChanged;
     }
 
     public void Start()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _fallbackTimer.Start();
 
         if (_winEventHook == IntPtr.Zero)
@@ -96,6 +115,16 @@ public sealed class ExplorerWindowWatcher : IDisposable
     }
 
     public void Stop()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        StopCore();
+    }
+
+    private void StopCore()
     {
         _fallbackTimer.Stop();
         _debounceTimer.Stop();
@@ -111,6 +140,11 @@ public sealed class ExplorerWindowWatcher : IDisposable
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint idEventThread, uint dwmsEventTime)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         if (idObject != ObjidWindow || idChild != 0 || hwnd == IntPtr.Zero)
         {
             return;
@@ -323,7 +357,13 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
     public void Dispose()
     {
-        Stop();
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        StopCore();
         _debounceTimer.Dispose();
         _fallbackTimer.Dispose();
 

@@ -17,8 +17,10 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Text = "ExplorerHub";
-        Width = 1100;
-        Height = 750;
+        // 窗口大小取所有显示器(虚拟桌面)总区域的四分之一, 而非仅主屏。
+        // SystemInformation.VirtualScreen 覆盖全部已连接显示器的逻辑桌面范围。
+        Width = SystemInformation.VirtualScreen.Width / 2;
+        Height = SystemInformation.VirtualScreen.Height / 2;
         MinimumSize = new Size(500, 350);
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
@@ -96,9 +98,27 @@ public sealed class MainForm : Form
         _watcher.Start();
     }
 
-    private static ShellObject ComputerFolder =>
-        ShellObject.FromParsingName(KnownFolders.Computer!.ParsingName!)
-        ?? throw new InvalidOperationException("无法打开“此电脑”");
+    private static ShellObject ComputerFolder
+    {
+        get
+        {
+            var computer = ShellObject.FromParsingName(KnownFolders.Computer?.ParsingName ?? string.Empty);
+            if (computer != null)
+            {
+                return computer;
+            }
+
+            // 兜底: 取不到“此电脑”时退回系统根目录, 避免启动即抛异常崩溃。
+            var fallbackDesktop = ShellObject.FromParsingName(
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
+            if (fallbackDesktop != null)
+            {
+                return fallbackDesktop;
+            }
+
+            throw new InvalidOperationException("无法打开任何 shell 文件夹");
+        }
+    }
 
     public ExplorerTabPage AddTab(ShellObject? target)
     {
@@ -110,6 +130,12 @@ public sealed class MainForm : Form
 
     private void OnWindowAbsorbed(object? sender, ExplorerWindowAbsorbedEventArgs e)
     {
+        // 程序正在退出时不再吸收, 否则会对已关闭的窗体调用 Show/Hide 引发 ObjectDisposedException。
+        if (_exiting || IsDisposed || Disposing)
+        {
+            return;
+        }
+
         ShellObject? target = null;
         var parsingName = e.ParsingName;
 
@@ -186,7 +212,7 @@ public sealed class MainForm : Form
 
     private void OnMainResize(object? sender, EventArgs e)
     {
-        if (WindowState == FormWindowState.Minimized)
+        if (WindowState == FormWindowState.Minimized && !_exiting && !IsDisposed && !Disposing)
         {
             Hide();
             _tray.ShowBalloonTip(1000, "ExplorerHub", "已最小化到后台运行", ToolTipIcon.Info);
@@ -207,6 +233,11 @@ public sealed class MainForm : Form
 
     private void ShowMainWindow()
     {
+        if (_exiting || IsDisposed || Disposing)
+        {
+            return;
+        }
+
         if (_tabs.TabPages.Count == 0)
         {
             AddTab(null);
