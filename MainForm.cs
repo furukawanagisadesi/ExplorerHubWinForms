@@ -32,6 +32,7 @@ public sealed class MainForm : Form
             ShowToolTips = true,
         };
         _tabs.TabDoubleClicked += OnTabDoubleClicked;
+        _tabs.TabAreaDoubleClicked += OnTabAreaDoubleClicked;
 
         var newTab = new ToolStripButton("新建标签页")
         {
@@ -195,6 +196,11 @@ public sealed class MainForm : Form
         }
     }
 
+    private void OnTabAreaDoubleClicked(object? sender, EventArgs e)
+    {
+        AddTab(null);
+    }
+
     private void OnMainKeyDown(object? sender, KeyEventArgs e)
     {
         if (e.Control && e.KeyCode == Keys.T)
@@ -229,6 +235,17 @@ public sealed class MainForm : Form
         if (m.Msg == Program.ShowMainWindowMessageId)
         {
             ShowMainWindow();
+            return;
+        }
+
+        if (m.Msg == 0x0203) // WM_LBUTTONDBLCLK
+        {
+            var p = m.LParam.ToInt64();
+            var client = new Point((short)(p & 0xFFFF), (short)((p >> 16) & 0xFFFF));
+            // 标签行“空白处”的双击投递到本窗体, 在此做命中判定。
+            // lParam 是本窗体(客户区)坐标 → 换算到 _tabs 客户区坐标后再做判定。
+            var screen = PointToScreen(client);
+            _tabs.HandleTabDoubleClick(_tabs.PointToClient(screen));
             return;
         }
 

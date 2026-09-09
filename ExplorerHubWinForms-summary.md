@@ -51,7 +51,8 @@ ExplorerHubWinForms/
 - **关闭行为**：点关闭按钮只 `Hide()` 隐藏到系统托盘（缩略图标），`FormClosing` 里 `e.Cancel = true`；从托盘菜单“退出”才真正退出（`_exiting=true`）。
 - **缩小行为（本次修改）**：无自定义 `OnMainResize`（已移除），缩小按钮走默认行为，窗口正常缩到**任务栏**（不隐藏、不弹气泡）。
 - **单实例接收（本次新增）**：重写 `WndProc`，捕获 `Program.ShowMainWindowMessageId`，调用 `ShowMainWindow()` 恢复并激活主窗口。
-- 双击标签关闭（监听 `_tabs.TabDoubleClicked`）。
+- **双击标签行空白处新建（本次新增）**：`WndProc` 中另处理 `WM_LBUTTONDBLCLK`（0x0203）——空白处双击会投递到本窗体（而非子控件），在此把本窗体客户区坐标经 `PointToScreen` → `PointToClient` 换算到 `_tabs` 客户区坐标，再调用 `_tabs.HandleTabDoubleClick(tabPoint)`。
+- 双击标签关闭（监听 `_tabs.TabDoubleClicked`，由 `ExplorerTabControl` 触发）。
 - `AddTab(ShellObject? target)`：新建 `ExplorerTabPage`（默认“此电脑”）。
 - `OnWindowAbsorbed`：程序退出中（`_exiting || IsDisposed || Disposing`）则忽略；否则把 `ParsingName` 转成 `ShellObject` 并新增标签页，然后 `ShowMainWindow()`；`file:///` URL 会转成本地路径；转换/识别失败则回退到“此电脑”。
 - `ShowMainWindow()`：若没有标签页则新建一个，然后显示并激活主窗；同上也做了退出中守卫。
@@ -61,8 +62,9 @@ ExplorerHubWinForms/
 
 ### 3.4 `ExplorerTabControl.cs`
 - 继承 `TabControl`，重写 `WndProc` 处理 `WM_LBUTTONDBLCLK`（0x0203），因为 TabControl 会把标签头上的双击事件内部消化。
-- 命中某标签矩形即触发 `TabDoubleClicked(index)` 事件。
-- 公开事件：`event EventHandler<int> TabDoubleClicked`。
+- 公开事件：`event EventHandler<int> TabDoubleClicked`（双击标签头→关闭）、`event EventHandler TabAreaDoubleClicked`（双击标签行空白处→新建）。
+- `HandleTabDoubleClick(Point clientPoint)`：双击命中判定（公共方法，两个窗口共用）。命中某标签矩形 → 触发 `TabDoubleClicked(index)`；否则若在标签行内（`y` 在标签行顶部与内容区上边缘之间，用 `DisplayRectangle.Top` 与 `GetTabRect(last).Top` 界定）→ 触发 `TabAreaDoubleClicked`。
+- **关键（本次修复后）**：标签头上的双击直接投递到本控件（子窗口）的 `WndProc`，**不会**经过父窗体；而标签行"空白处"的双击投递到 `MainForm`。因此关闭逻辑在 `ExplorerTabControl.WndProc` 处理（它只收得到标签头双击），新建逻辑由 `MainForm.WndProc` 转向调用 `HandleTabDoubleClick`（它只收得到空白处双击），两者互补、不重复投递。
 
 ### 3.5 `ExplorerTabPage.cs`（单个标签页）
 - 继承 `TabPage`。
@@ -72,9 +74,9 @@ ExplorerHubWinForms/
 - `UpdateNavigationState()`：根据 `NavigationLog` 刷新后退/前进/上一级按钮状态和标签标题/地址。
 - 地址框回车：把文本 `ShellObject.FromParsingName` 后导航，失败弹窗。
 - **地址框（`_address`，`ToolStripTextBox`）**：`AutoSize=false`、`Width=900`，占据工具栏剩余可用宽度的主体（纯固定宽度，不做自动拉伸布局）。
-- **复制路径按钮（`_copyPath`，本次新增）**：工具栏里地址框右侧，两者之间用 `ToolStripSeparator()` 留出空隙。点击调用 `CopyCurrentPath()`——把地址框当前显示的路径复制到剪贴板；文本为空则不做任何事，剪贴板访问失败时弹窗提示。
+- **复制路径按钮（`_copyPath`）**：工具栏里地址框右侧，两者之间用 `ToolStripSeparator()` 留出空隙。点击调用 `CopyCurrentPath()`——把地址框当前显示的路径复制到剪贴板；文本为空则不做任何事，剪贴板访问失败时弹窗提示。
 - 刷新：重新导航到当前目录（`NavigateLogLocation` 到相同索引是空操作，需重导航）。
-- **`Dispose`（本次修复）**：除了取消 `NavigationLogChanged` / `NavigationComplete` 事件，还调用 `Application.RemoveMessageFilter(_browser)`——见下方第 4 节崩溃根因。
+- **`Dispose`（修复）**：除了取消 `NavigationLogChanged` / `NavigationComplete` 事件，还调用 `Application.RemoveMessageFilter(_browser)`——见下方第 4 节崩溃根因。
 
 ### 3.6 `ExplorerWindowWatcher.cs`（核心：监视并吸收 explorer 窗口）
 > ⚠️ 这是本项目中“吸收窗口”的唯一入口。
