@@ -1,0 +1,16 @@
+# .NET build artifacts
+bin/
+obj/
+*.user
+
+# Visual Studio
+.vs/
+.vscode/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Rider / JetBrains
+.idea/
+*.suo
