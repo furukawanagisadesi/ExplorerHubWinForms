@@ -212,69 +212,116 @@ public sealed class ExplorerWindowWatcher : IDisposable
         }
         catch
         {
-            _shell = null;
+            // Shell.Windows() 失败说明缓存的 Shell.Application 可能已失效, 释放后重建。
+            ReleaseShell();
             return 0;
         }
 
-        var current = new HashSet<long>();
-        int count;
         try
         {
-            count = (int)windows.Count;
-        }
-        catch
-        {
-            return 0;
-        }
-
-        for (var i = 0; i < count; i++)
-        {
-            dynamic window;
+            var current = new HashSet<long>();
+            int count;
             try
             {
-                window = windows.Item(i);
+                count = (int)windows.Count;
             }
             catch
             {
-                continue;
+                return 0;
             }
 
-            long hwnd;
-            if (!IsExplorerWindow(window, out hwnd))
+            for (var i = 0; i < count; i++)
             {
-                continue;
-            }
-
-            // 控制面板不是真正的文件夹, 不吸收, 保持原窗口不动。
-            if (IsControlPanel(window))
-            {
-                continue;
-            }
-
-            current.Add(hwnd);
-            var isNew = _seen.Add(hwnd);
-
-            if (absorbNew && isNew)
-            {
-                var parsingName = GetParsingName(window);
-
+                dynamic window;
                 try
                 {
-                    window.Quit();
+                    window = windows.Item(i);
                 }
                 catch
                 {
-                    // 忽略关闭失败
+                    continue;
                 }
 
-                absorbedCount++;
-                WindowAbsorbed?.Invoke(this, new ExplorerWindowAbsorbedEventArgs(parsingName));
+                // 每个 window 都是一次 COM 调用产生的 RCW, 用后必须释放, 否则 3 秒轮询会持续累积。
+                try
+                {
+                    long hwnd;
+                    if (!IsExplorerWindow(window, out hwnd))
+                    {
+                        continue;
+                    }
+
+                    // 控制面板不是真正的文件夹, 不吸收, 保持原窗口不动。
+                    if (IsControlPanel(window))
+                    {
+                        continue;
+                    }
+
+                    current.Add(hwnd);
+                    var isNew = _seen.Add(hwnd);
+
+                    if (absorbNew && isNew)
+                    {
+                        var parsingName = GetParsingName(window);
+
+                        try
+                        {
+                            window.Quit();
+                        }
+                        catch
+                        {
+                            // 忽略关闭失败
+                        }
+
+                        absorbedCount++;
+                        WindowAbsorbed?.Invoke(this, new ExplorerWindowAbsorbedEventArgs(parsingName));
+                    }
+                }
+                finally
+                {
+                    ReleaseComObject(window);
+                }
             }
+
+            // 移除已经消失的窗口句柄, 防止集合无限增长。
+            _seen.IntersectWith(current);
+            return absorbedCount;
+        }
+        finally
+        {
+            ReleaseComObject(windows);
+        }
+    }
+
+    private static void ReleaseComObject(object? comObject)
+    {
+        if (comObject == null)
+        {
+            return;
         }
 
-        // 移除已经消失的窗口句柄, 防止集合无限增长。
-        _seen.IntersectWith(current);
-        return absorbedCount;
+        try
+        {
+            if (Marshal.IsComObject(comObject))
+            {
+                Marshal.ReleaseComObject(comObject);
+            }
+        }
+        catch
+        {
+            // 忽略释放失败(如对象已被释放)
+        }
+    }
+
+    private void ReleaseShell()
+    {
+        if (_shell == null)
+        {
+            return;
+        }
+
+        ReleaseComObject(_shell);
+        _shell = null;
     }
 
     /// <summary>
@@ -366,19 +413,6 @@ public sealed class ExplorerWindowWatcher : IDisposable
         StopCore();
         _debounceTimer.Dispose();
         _fallbackTimer.Dispose();
-
-        if (_shell != null)
-        {
-            try
-            {
-                Marshal.ReleaseComObject(_shell);
-            }
-            catch
-            {
-                // 忽略
-            }
-
-            _shell = null;
-        }
+        ReleaseShell();
     }
 }

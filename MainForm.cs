@@ -136,36 +136,44 @@ public sealed class MainForm : Form
             return;
         }
 
-        ShellObject? target = null;
-        var parsingName = e.ParsingName;
-
-        if (!string.IsNullOrWhiteSpace(parsingName))
+        // 本方法由 ExplorerWindowWatcher 的计时器回调驱动, 异常不能冒泡中断后续吸收。
+        try
         {
-            // 普通文件夹给的是 file:/// URL, 需要转成本地路径; ::{GUID} 形式的解析名直接用。
-            if (parsingName.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            ShellObject? target = null;
+            var parsingName = e.ParsingName;
+
+            if (!string.IsNullOrWhiteSpace(parsingName))
             {
+                // 普通文件夹给的是 file:/// URL, 需要转成本地路径; ::{GUID} 形式的解析名直接用。
+                if (parsingName.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        parsingName = new Uri(parsingName).LocalPath;
+                    }
+                    catch
+                    {
+                        // 转换失败则保持原样
+                    }
+                }
+
                 try
                 {
-                    parsingName = new Uri(parsingName).LocalPath;
+                    target = ShellObject.FromParsingName(parsingName);
                 }
                 catch
                 {
-                    // 转换失败则保持原样
+                    // 无法识别的地址, 退回到“此电脑”
                 }
             }
 
-            try
-            {
-                target = ShellObject.FromParsingName(parsingName);
-            }
-            catch
-            {
-                // 无法识别的地址, 退回到“此电脑”
-            }
+            AddTab(target);
+            ShowMainWindow();
         }
-
-        AddTab(target);
-        ShowMainWindow();
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"吸收资源管理器窗口失败: {ex}");
+        }
     }
 
     private void CloseCurrentTab()
@@ -219,6 +227,15 @@ public sealed class MainForm : Form
     {
         if (_exiting)
         {
+            return;
+        }
+
+        // 系统关机/注销或任务管理器结束时必须放行, 否则会阻止会话结束。
+        if (e.CloseReason is CloseReason.WindowsShutDown
+            or CloseReason.TaskManagerClosing
+            or CloseReason.ApplicationExitCall)
+        {
+            _exiting = true;
             return;
         }
 

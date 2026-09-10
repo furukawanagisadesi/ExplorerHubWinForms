@@ -16,6 +16,7 @@ public sealed class ExplorerTabPage : TabPage
     private readonly ToolStripButton _refresh;
     private readonly ToolStripTextBox _address;
     private readonly ToolStripButton _copyPath;
+    private bool _updatingAddressWidth;
 
     public ExplorerBrowser Browser => _browser;
 
@@ -39,7 +40,6 @@ public sealed class ExplorerTabPage : TabPage
         _address = new ToolStripTextBox
         {
             AutoSize = false,
-            Width = 900,
             ToolTipText = "输入路径后回车导航",
         };
         _copyPath = new ToolStripButton("复制路径")
@@ -88,29 +88,45 @@ public sealed class ExplorerTabPage : TabPage
     /// </summary>
     private void UpdateAddressWidth(ToolStrip toolStrip)
     {
-        var contentWidth = toolStrip.ClientSize.Width;
-        if (contentWidth <= 0)
+        // 设置宽度会触发布局; 虽然布局不会再触发 Resize, 仍用重入守卫让不变量显式化。
+        if (_updatingAddressWidth)
         {
             return;
         }
 
-        var reserved = _address.Margin.Horizontal;
-        foreach (ToolStripItem item in toolStrip.Items)
+        _updatingAddressWidth = true;
+        try
         {
-            if (!ReferenceEquals(item, _address))
+            var contentWidth = toolStrip.ClientSize.Width;
+            if (contentWidth <= 0)
             {
-                reserved += item.Width + item.Margin.Horizontal;
+                return;
             }
-        }
 
-        var available = contentWidth - toolStrip.Padding.Horizontal - reserved;
-        if (available <= 0)
+            // 用“首选宽度”而非实时 Width: 某项被放进溢出菜单时 Width 会失真,
+            // GetPreferredSize 始终返回其正常布局下的宽度。
+            var reserved = _address.Margin.Horizontal;
+            foreach (ToolStripItem item in toolStrip.Items)
+            {
+                if (!ReferenceEquals(item, _address))
+                {
+                    reserved += item.GetPreferredSize(Size.Empty).Width + item.Margin.Horizontal;
+                }
+            }
+
+            var available = contentWidth - toolStrip.Padding.Horizontal - reserved;
+            if (available <= 0)
+            {
+                _address.Width = 1;
+                return;
+            }
+
+            _address.Width = Math.Min((int)(contentWidth * 0.75), available);
+        }
+        finally
         {
-            _address.Width = 1;
-            return;
+            _updatingAddressWidth = false;
         }
-
-        _address.Width = Math.Min((int)(contentWidth * 0.75), available);
     }
 
     /// <summary>

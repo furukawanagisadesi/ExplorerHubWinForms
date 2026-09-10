@@ -73,7 +73,7 @@ ExplorerHubWinForms/
 - `TryNavigate(target, showError)`：包裹 `ExplorerBrowser.Navigate`，`CommonControlException` 等会被捕获，`showError=true` 时弹窗。
 - `UpdateNavigationState()`：根据 `NavigationLog` 刷新后退/前进/上一级按钮状态和标签标题/地址。
 - 地址框回车：把文本 `ShellObject.FromParsingName` 后导航，失败弹窗。
-- **地址框（`_address`，`ToolStripTextBox`）**：`AutoSize=false`，宽度随窗口自动调整。构造时订阅 `toolStrip.Resize` 并调用 `UpdateAddressWidth(toolStrip)`：宽度 = `min(工具栏内容区宽度 × 3/4, 内容区宽度 − 各按钮及边距占用)`。即大窗口下恒为窗口内容区的 3/4，窗口偏窄时自动收缩到刚好放下右侧按钮，避免“复制路径”被挤进溢出菜单。`UpdateAddressWidth` 通过遍历 `toolStrip.Items`（排除地址框本身）累加 `Width + Margin.Horizontal` 实算预留宽度，不写死常量。
+- **地址框（`_address`，`ToolStripTextBox`）**：`AutoSize=false`，宽度随窗口自动调整。构造时订阅 `toolStrip.Resize` 并调用 `UpdateAddressWidth(toolStrip)`：宽度 = `min(工具栏内容区宽度 × 3/4, 内容区宽度 − 各按钮及边距占用)`。即大窗口下恒为窗口内容区的 3/4，窗口偏窄时自动收缩到刚好放下右侧按钮，避免“复制路径”被挤进溢出菜单。`UpdateAddressWidth` 通过遍历 `toolStrip.Items`（排除地址框本身）累加 `GetPreferredSize(Size.Empty).Width + Margin.Horizontal` 实算预留宽度，不写死常量；用首选宽度而非实时 `Width`，避免某项进入溢出菜单时宽度失真，并带重入守卫。
 - **复制路径按钮（`_copyPath`）**：工具栏里地址框右侧，两者之间用 `ToolStripSeparator()` 留出空隙。点击调用 `CopyCurrentPath()`——把地址框当前显示的路径复制到剪贴板；文本为空则不做任何事，剪贴板访问失败时弹窗提示。
 - 刷新：重新导航到当前目录（`NavigateLogLocation` 到相同索引是空操作，需重导航）。
 - **`Dispose`（修复）**：除了取消 `NavigationLogChanged` / `NavigationComplete` 事件，还调用 `Application.RemoveMessageFilter(_browser)`——见下方第 4 节崩溃根因。
