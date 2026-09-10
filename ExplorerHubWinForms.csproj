@@ -9,11 +9,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 固定在 8.0.14: 8.0.15 起 ExplorerBrowser 的 PreFilterMessage 增加了
-         目标/焦点判断, 导致 shell 快捷键(Ctrl+C/Ctrl+V 等)不再通过
-         TranslateAcceleratorIO 下发, 复制粘贴失效。升级前请先验证复制粘贴。
-         参见 Windows-API-CodePack-NET issue #40 与 commit e48985b。 -->
-    <PackageReference Include="WindowsAPICodePack" Version="8.0.14" />
+    <!-- 固定在 8.0.6: 8.0.9 起 ExplorerBrowser 的 ICommDlgBrowser3.IncludeObject
+         会调用 FireContentChanged() -> UpdateSearchState() -> Items, 而 Items
+         getter 每次都会重建整个项目集合。IncludeObject 每个条目调用一次, 于是
+         大目录(如 C:\Windows\System32)变成 O(N^2), 界面假死。
+         8.0.15 起还改了 PreFilterMessage 的焦点判断, 导致 Ctrl+C/Ctrl+V 复制粘贴失效。
+         8.0.6 无以上两个问题。升级前请务必验证: 复制粘贴、大目录导航不卡死。 -->
+    <PackageReference Include="WindowsAPICodePack" Version="8.0.6" />
   </ItemGroup>
 
 </Project>

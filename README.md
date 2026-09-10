@@ -15,8 +15,11 @@
 
 - .NET 8 (`net8.0-windows`)
 - Windows Forms (`UseWindowsForms`)
-- NuGet 包：[`WindowsAPICodePack`](https://www.nuget.org/packages/WindowsAPICodePack) 8.0.14（提供 `ExplorerBrowser` / `ShellObject` / `Shell` 等）
-  - **固定在 8.0.14**：8.0.15 起该库修改了 `ExplorerBrowser.PreFilterMessage`，增加了目标/焦点判断，导致 shell 快捷键（Ctrl+C/Ctrl+V 等）不再下发，复制粘贴失效。升级前请先验证复制粘贴。
+- NuGet 包：[`WindowsAPICodePack`](https://www.nuget.org/packages/WindowsAPICodePack) 8.0.6（提供 `ExplorerBrowser` / `ShellObject` / `Shell` 等）
+  - **固定在 8.0.6**：
+    - 8.0.9 起 `ExplorerBrowser` 的 `ICommDlgBrowser3.IncludeObject` 每个条目都会触发 `FireContentChanged() → UpdateSearchState() → Items`，而 `Items` 每次访问都重建整个项目集合；`IncludeObject` 逐条目调用，于是大目录（如 `C:\Windows\System32`）退化为 O(N²)，界面假死。
+    - 8.0.15 起 `PreFilterMessage` 增加了目标/焦点判断，使 shell 快捷键（Ctrl+C/Ctrl+V 等）不再下发，复制粘贴失效。
+  - 升级前请务必验证：复制粘贴可用、大目录导航不卡死。
 
 ## 构建
 

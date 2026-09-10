@@ -1,15 +1,17 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）”之后的状态。
 
 ## 1. 项目概览
 
 - **名称**：ExplorerHubWinForms
 - **类型**：Windows 桌面程序（`WinExe`），基于 WinForms + Windows API Code Pack
 - **目标框架**：`net8.0-windows`
-- **NuGet**：`WindowsAPICodePack` **8.0.14（已固定，勿升级）**（提供 `ExplorerBrowser` / `ShellObject` 等）
-  - 原因：8.0.15 起 `ExplorerBrowser.PreFilterMessage` 增加了 `IsMessageForExplorerBrowser` 与 `HasFocusIO` 判断，命中不了就不再调用 `TranslateAcceleratorIO`，导致 Ctrl+C/Ctrl+V 等 shell 快捷键（复制粘贴）失效。参见 Windows-API-CodePack-NET issue #40 与 commit e48985b。
+- **NuGet**：`WindowsAPICodePack` **8.0.6（已固定，勿升级）**（提供 `ExplorerBrowser` / `ShellObject` 等）
+  - 原因一（大目录假死）：8.0.9 起 `ExplorerBrowser` 的 `ICommDlgBrowser3.IncludeObject` 会调用 `FireContentChanged() → UpdateSearchState() → Items`，而 `Items` getter 每次访问都重建整个项目集合；`IncludeObject` 由 shell 视图逐条目调用，于是大目录（如 `C:\Windows\System32`）退化为 O(N²)，UI 假死。
+  - 原因二（复制粘贴失效）：8.0.15 起 `ExplorerBrowser.PreFilterMessage` 增加了 `IsMessageForExplorerBrowser` 与 `HasFocusIO` 判断，命中不了就不再调用 `TranslateAcceleratorIO`，导致 Ctrl+C/Ctrl+V 等 shell 快捷键失效。参见 Windows-API-CodePack-NET issue #40 与 commit e48985b。
+  - 8.0.6 无以上两个问题；升级前请务必验证复制粘贴与大目录导航。
 - **核心功能**：把系统中新建的资源管理器（explorer.exe）窗口“吸收”成程序内的原生标签页，形成多标签资源管理器体验。单实例运行；缩小按钮缩到任务栏；关闭按钮隐藏到系统托盘继续后台运行。
 
 ## 2. 文件结构
@@ -150,7 +152,8 @@ ExplorerHubWinForms/
 - **`.cpl` 或非文件夹 shell 位置**：`ExplorerBrowser.Navigate` 会抛 `CommonControlException`，`Program.cs` 全局已忽略，`ExplorerTabPage.TryNavigate` 也捕获。
 - **常驻托盘**：关闭按钮隐藏到托盘缩略图标；缩小按钮缩到任务栏；仅托盘菜单“退出”真正退出。
 - **空标签页时**：`CloseTab` 若没有标签页则 `Hide()` 到托盘继续后台吸收。
-- **复制粘贴 / shell 快捷键**：依赖 `ExplorerBrowser` 通过 `TranslateAcceleratorIO` 下发。`WindowsAPICodePack` 固定在 8.0.14，8.0.15+ 会因新增的焦点/目标判断使其失效（详见第 1 节）。
+- **复制粘贴 / shell 快捷键**：依赖 `ExplorerBrowser` 通过 `TranslateAcceleratorIO` 下发。`WindowsAPICodePack` 固定在 8.0.6，8.0.15+ 会因新增的焦点/目标判断使其失效（详见第 1 节）。
+- **大目录假死**：8.0.9 起 `IncludeObject` 逐条目触发全量 `Items` 重建，大目录 O(N²) 假死；固定在 8.0.6 规避（详见第 1 节）。
 - 工程在 `D:\Program\CSharp\WorkProject\ExplorerHubWinForms`，可用 `dotnet build` 编译（`net8.0-windows`）。
 - 若编译报“文件被占用”，说明有运行中的实例（单实例进程），先 `Stop-Process-Name ExplorerHubWinForms` 再编译。
 
