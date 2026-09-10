@@ -69,6 +69,9 @@ public sealed class ExplorerTabPage : TabPage
         Controls.Add(_browser);
         Controls.Add(toolStrip);
 
+        toolStrip.Resize += (_, _) => UpdateAddressWidth(toolStrip);
+        UpdateAddressWidth(toolStrip);
+
         _back.Click += (_, _) => _browser.NavigateLogLocation(NavigationLogDirection.Backward);
         _forward.Click += (_, _) => _browser.NavigateLogLocation(NavigationLogDirection.Forward);
         _up.Click += (_, _) => NavigateUp();
@@ -77,6 +80,37 @@ public sealed class ExplorerTabPage : TabPage
         _copyPath.Click += (_, _) => CopyCurrentPath();
 
         TryNavigate(initialTarget, showError: false);
+    }
+
+    /// <summary>
+    /// 让地址栏宽度随窗口变化: 取工具栏内容区宽度的 3/4, 但不超过扣除导航/复制
+    /// 按钮后剩余的可用宽度, 以免右侧按钮被挤进溢出菜单。
+    /// </summary>
+    private void UpdateAddressWidth(ToolStrip toolStrip)
+    {
+        var contentWidth = toolStrip.ClientSize.Width;
+        if (contentWidth <= 0)
+        {
+            return;
+        }
+
+        var reserved = _address.Margin.Horizontal;
+        foreach (ToolStripItem item in toolStrip.Items)
+        {
+            if (!ReferenceEquals(item, _address))
+            {
+                reserved += item.Width + item.Margin.Horizontal;
+            }
+        }
+
+        var available = contentWidth - toolStrip.Padding.Horizontal - reserved;
+        if (available <= 0)
+        {
+            _address.Width = 1;
+            return;
+        }
+
+        _address.Width = Math.Min((int)(contentWidth * 0.75), available);
     }
 
     /// <summary>
