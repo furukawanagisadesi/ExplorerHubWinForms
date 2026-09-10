@@ -166,17 +166,26 @@ public sealed class ExplorerTabPage : TabPage
 
     private void UpdateNavigationState()
     {
-        var log = _browser.NavigationLog;
-        _back.Enabled = log.CanNavigateBackward;
-        _forward.Enabled = log.CanNavigateForward;
-
-        var location = log.CurrentLocation;
-        _up.Enabled = location?.Parent != null;
-
-        if (location != null)
+        // 本方法由 ExplorerBrowser 的 COM 事件回调直接调用, 某些 shell 项访问属性会抛异常;
+        // 异常若跨 COM 边界返回会给 shell 一个失败 HRESULT 并可能让浏览器状态不一致, 这里全部兜住。
+        try
         {
-            _address.Text = location.IsFileSystemObject ? location.ParsingName : location.Name;
-            Text = string.IsNullOrEmpty(location.Name) ? "新标签页" : location.Name;
+            var log = _browser.NavigationLog;
+            _back.Enabled = log.CanNavigateBackward;
+            _forward.Enabled = log.CanNavigateForward;
+
+            var location = log.CurrentLocation;
+            _up.Enabled = location?.Parent != null;
+
+            if (location != null)
+            {
+                _address.Text = location.IsFileSystemObject ? location.ParsingName : location.Name;
+                Text = string.IsNullOrEmpty(location.Name) ? "新标签页" : location.Name;
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"刷新导航状态失败: {ex}");
         }
     }
 

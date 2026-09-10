@@ -12,6 +12,12 @@ public sealed class ExplorerWindowAbsorbedEventArgs : EventArgs
 
     /// <summary>被吸收窗口的地址, 可能是 file:/// URL 或 ::{GUID} 形式的 shell 解析名。</summary>
     public string ParsingName { get; }
+
+    /// <summary>
+    /// 宿主是否已成功创建对应标签页。只有为 true 时 watcher 才会关闭原资源管理器窗口,
+    /// 从而避免“原窗口已关、标签页没建出来”的情况。
+    /// </summary>
+    public bool Absorbed { get; set; }
 }
 
 /// <summary>
@@ -230,7 +236,8 @@ public sealed class ExplorerWindowWatcher : IDisposable
                 return 0;
             }
 
-            for (var i = 0; i < count; i++)
+            // 倒序遍历: 吸收成功后 Quit() 会把窗口移出集合, 正序会因下标位移而漏掉窗口。
+            for (var i = count - 1; i >= 0; i--)
             {
                 dynamic window;
                 try
@@ -262,7 +269,16 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
                     if (absorbNew && isNew)
                     {
-                        var parsingName = GetParsingName(window);
+                        var args = new ExplorerWindowAbsorbedEventArgs(GetParsingName(window));
+
+                        // 先让宿主建标签页, 建成功后才关闭原窗口, 保证不会“窗口关了、标签没建出来”。
+                        WindowAbsorbed?.Invoke(this, args);
+                        if (!args.Absorbed)
+                        {
+                            // 建标签失败: 保留原窗口不动。hwnd 已在 _seen 且仍在 current 中,
+                            // 后续轮询视为已见, 不会反复重试。
+                            continue;
+                        }
 
                         try
                         {
@@ -274,12 +290,12 @@ public sealed class ExplorerWindowWatcher : IDisposable
                         }
 
                         absorbedCount++;
-                        WindowAbsorbed?.Invoke(this, new ExplorerWindowAbsorbedEventArgs(parsingName));
                     }
                 }
                 finally
                 {
-                    ReleaseComObject(window);
+                    object? windowObject = window;
+                    ReleaseComObject(windowObject);
                 }
             }
 
@@ -289,7 +305,8 @@ public sealed class ExplorerWindowWatcher : IDisposable
         }
         finally
         {
-            ReleaseComObject(windows);
+            object? windowsObject = windows;
+            ReleaseComObject(windowsObject);
         }
     }
 
@@ -320,8 +337,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
             return;
         }
 
-        ReleaseComObject(_shell);
+        object shell = _shell;
         _shell = null;
+        ReleaseComObject(shell);
     }
 
     /// <summary>
@@ -343,13 +361,38 @@ public sealed class ExplorerWindowWatcher : IDisposable
             // 忽略, 走下面的兜底
         }
 
+        return GetFolderSelfProperty(window, path: true);
+    }
+
+    /// <summary>
+    /// 读取 Document.Folder.Self 的 Path/Name。这三级嵌套属性访问各产生一个中间 COM RCW,
+    /// 必须显式释放, 否则多次轮询后会累积。
+    /// </summary>
+    private static string GetFolderSelfProperty(dynamic window, bool path)
+    {
+        dynamic? document = null;
+        dynamic? folder = null;
+        dynamic? self = null;
+
         try
         {
-            return (string)window.Document.Folder.Self.Path;
+            document = window.Document;
+            folder = document.Folder;
+            self = folder.Self;
+            return (string)(path ? self.Path : self.Name);
         }
         catch
         {
             return string.Empty;
+        }
+        finally
+        {
+            object? selfObject = self;
+            object? folderObject = folder;
+            object? documentObject = document;
+            ReleaseComObject(selfObject);
+            ReleaseComObject(folderObject);
+            ReleaseComObject(documentObject);
         }
     }
 
@@ -369,16 +412,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
         }
 
         // 兜底: 某些变体窗口解析名拿不到时, 尝试用文件夹显示名判断。
-        try
-        {
-            var name = (string)window.Document.Folder.Self.Name;
-            return string.Equals(name, "Control Panel", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(name, "控制面板", StringComparison.Ordinal);
-        }
-        catch
-        {
-            return false;
-        }
+        var name = GetFolderSelfProperty(window, path: false);
+        return string.Equals(name, "Control Panel", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(name, "控制面板", StringComparison.Ordinal);
     }
 
     private static bool IsExplorerWindow(dynamic window, out long hwnd)

@@ -102,10 +102,16 @@ public sealed class MainForm : Form
     {
         get
         {
-            var computer = ShellObject.FromParsingName(KnownFolders.Computer?.ParsingName ?? string.Empty);
-            if (computer != null)
+            // 注意: 不能把 null 解析名并成空串再传入, FromParsingName("") 会抛异常,
+            // 那样下面的桌面兜底就永远走不到。这里先判空。
+            var computerPath = KnownFolders.Computer?.ParsingName;
+            if (!string.IsNullOrEmpty(computerPath))
             {
-                return computer;
+                var computer = ShellObject.FromParsingName(computerPath);
+                if (computer != null)
+                {
+                    return computer;
+                }
             }
 
             // 兜底: 取不到“此电脑”时退回系统根目录, 避免启动即抛异常崩溃。
@@ -169,6 +175,9 @@ public sealed class MainForm : Form
 
             AddTab(target);
             ShowMainWindow();
+
+            // 标签页已建好, 通知 watcher 可以安全关闭原资源管理器窗口。
+            e.Absorbed = true;
         }
         catch (Exception ex)
         {

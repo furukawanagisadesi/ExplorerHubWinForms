@@ -1,7 +1,7 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固”之后的状态。
 
 ## 1. 项目概览
 
@@ -54,7 +54,7 @@ ExplorerHubWinForms/
 - **双击标签行空白处新建（本次新增）**：`WndProc` 中另处理 `WM_LBUTTONDBLCLK`（0x0203）——空白处双击会投递到本窗体（而非子控件），在此把本窗体客户区坐标经 `PointToScreen` → `PointToClient` 换算到 `_tabs` 客户区坐标，再调用 `_tabs.HandleTabDoubleClick(tabPoint)`。
 - 双击标签关闭（监听 `_tabs.TabDoubleClicked`，由 `ExplorerTabControl` 触发）。
 - `AddTab(ShellObject? target)`：新建 `ExplorerTabPage`（默认“此电脑”）。
-- `OnWindowAbsorbed`：程序退出中（`_exiting || IsDisposed || Disposing`）则忽略；否则把 `ParsingName` 转成 `ShellObject` 并新增标签页，然后 `ShowMainWindow()`；`file:///` URL 会转成本地路径；转换/识别失败则回退到“此电脑”。
+- `OnWindowAbsorbed`：程序退出中（`_exiting || IsDisposed || Disposing`）则忽略；否则把 `ParsingName` 转成 `ShellObject` 并新增标签页，然后 `ShowMainWindow()`；`file:///` URL 会转成本地路径；转换/识别失败则回退到“此电脑”。整个方法包在 try/catch 中，异常不会冒泡中断计时器驱动的吸收循环。**成功建好标签后设置 `e.Absorbed = true`**，watcher 据此才关闭原窗口（事务化吸收）。
 - `ShowMainWindow()`：若没有标签页则新建一个，然后显示并激活主窗；同上也做了退出中守卫。
 - `CloseTab(tab)`：移除并 Dispose 标签页；若无标签页则 `Hide()` 到托盘继续后台吸收。
 - `ExitApplication()`：`_exiting=true`、隐藏托盘、`Close()`。
@@ -71,7 +71,7 @@ ExplorerHubWinForms/
 - 持有：`ExplorerBrowser _browser`（`Dock=Fill`）、导航工具栏（后退/前进/上一级/刷新/地址框/复制路径）。
 - 构造时接收 `ShellObject? initialTarget`，默认会导航到目标；无法导航时静默（`showError=false`）。
 - `TryNavigate(target, showError)`：包裹 `ExplorerBrowser.Navigate`，`CommonControlException` 等会被捕获，`showError=true` 时弹窗。
-- `UpdateNavigationState()`：根据 `NavigationLog` 刷新后退/前进/上一级按钮状态和标签标题/地址。
+- `UpdateNavigationState()`：根据 `NavigationLog` 刷新后退/前进/上一级按钮状态和标签标题/地址。整体包 try/catch——该方法由 `ExplorerBrowser` 的 COM 事件回调直接调用，某些 shell 项访问属性会抛异常，不能让异常跨 COM 边界返回。
 - 地址框回车：把文本 `ShellObject.FromParsingName` 后导航，失败弹窗。
 - **地址框（`_address`，`ToolStripTextBox`）**：`AutoSize=false`，宽度随窗口自动调整。构造时订阅 `toolStrip.Resize` 并调用 `UpdateAddressWidth(toolStrip)`：宽度 = `min(工具栏内容区宽度 × 3/4, 内容区宽度 − 各按钮及边距占用)`。即大窗口下恒为窗口内容区的 3/4，窗口偏窄时自动收缩到刚好放下右侧按钮，避免“复制路径”被挤进溢出菜单。`UpdateAddressWidth` 通过遍历 `toolStrip.Items`（排除地址框本身）累加 `GetPreferredSize(Size.Empty).Width + Margin.Horizontal` 实算预留宽度，不写死常量；用首选宽度而非实时 `Width`，避免某项进入溢出菜单时宽度失真，并带重入守卫。
 - **复制路径按钮（`_copyPath`）**：工具栏里地址框右侧，两者之间用 `ToolStripSeparator()` 留出空隙。点击调用 `CopyCurrentPath()`——把地址框当前显示的路径复制到剪贴板；文本为空则不做任何事，剪贴板访问失败时弹窗提示。
@@ -90,13 +90,13 @@ ExplorerHubWinForms/
 - `ExplorerPath`：`%Windows%\explorer.exe`。
 - `ControlPanelClsid = "26EE0668-A00A-44D7-9371-BEB064C98683"`（控制面板 CLSID）。
 - `WinEventHook`、`_debounceTimer`(80ms)、`_fallbackTimer`(3000ms)、`HashSet<long> _seen`、`dynamic _shell`、`_retriesLeft`、`bool _disposed`（本次新增）。
-- 事件：`event EventHandler<ExplorerWindowAbsorbedEventArgs> WindowAbsorbed`。
+- 事件：`event EventHandler<ExplorerWindowAbsorbedEventArgs> WindowAbsorbed`。`ExplorerWindowAbsorbedEventArgs` 含 `ParsingName` 与 `Absorbed`（宿主建好标签页后置 true，watcher 才关闭原窗口）。
 
 **生命周期**：
 - `Start()`：若已 `_disposed` 则直接返回；否则启动 fallback timer；若非空则挂前台钩子。
 - `Stop()`：若已 `_disposed` 则直接返回；否则调用 `StopCore()`。
 - `StopCore()`（本次拆分）：停两个 timer、卸载钩子。拆出私有方法是为了让 `Dispose` 在置位 `_disposed` 后仍能真正卸载钩子/计时器。
-- `Dispose()`（本次加固）：先置位 `_disposed` 再 `StopCore()`、释放 timer、`Marshal.ReleaseComObject(_shell)`。
+- `Dispose()`（本次加固）：先置位 `_disposed` 再 `StopCore()`、释放 timer、`ReleaseShell()`（释放并清空缓存的 `_shell`）。
 
 **构造函数**：创建两个 timer 和委托；启动时调用一次 `Poll(absorbNew: false)` 记录已存在窗口，避免把已有窗口也吸进来。
 
@@ -104,18 +104,22 @@ ExplorerHubWinForms/
 1. `IsExplorerWindow`：`FullName == ExplorerPath` 且 `HWND != 0`，否则跳过。
 2. `IsControlPanel(window)`：若是控制面板 → `continue`，不吸收、不关闭、不登记。
 3. `current.Add(hwnd)`；`isNew = _seen.Add(hwnd)`。
-4. 若 `absorbNew && isNew`：取 `GetParsingName`，调用 `window.Quit()` 关闭该窗口，`absorbedCount++`，触发 `WindowAbsorbed`。
+4. 若 `absorbNew && isNew`：取 `GetParsingName` 构造事件参数并**先触发 `WindowAbsorbed`**；仅当宿主回填 `args.Absorbed == true` 才调用 `window.Quit()` 关闭原窗口并 `absorbedCount++`（事务化，避免“窗口关了、标签没建出来”）。
 5. 循环结束 `_seen.IntersectWith(current)` 清理已消失句柄。
+6. **倒序遍历**（`i` 从 `count-1` 递减）：`Quit()` 会把窗口移出集合，正序会因下标位移而漏掉窗口。
+7. COM 释放：`windows`（外层 `finally`）与每个 `window`（内层 `finally`）各释放一次；`ReleaseComObject` 以 `Marshal.IsComObject` 守卫。`Shell.Windows()` 抛错时 `ReleaseShell()` 释放并重建缓存。
 
 **`OnForegroundChanged`**：`idObject==ObjidWindow && idChild==0 && hwnd!=0` 且 `IsExplorerProcess(hwnd)`（进程名是 explorer）且 `_seen` 不包含该 hwnd 时，设置 `_retriesLeft=20` 并启动防抖 timer。`_disposed` 时直接返回（本次加固——防退出时仍有已排队的 WinEvent 回调访问已释放 Timer）。
 
 **`IsControlPanel(dynamic window)`**：
 - 优先用 `GetParsingName(window)`（即 `LocationURL` 或 `Document.Folder.Self.Path`），判断是否包含 `ControlPanelClsid`（不区分大小写）。该 CLSID 与系统显示语言无关，最可靠。
-- 兜底：`window.Document.Folder.Self.Name` 是否为 `"Control Panel"` 或 `"控制面板"`。
+- 兜底：`Document.Folder.Self.Name` 是否为 `"Control Panel"` 或 `"控制面板"`。
 
 **`GetParsingName(dynamic window)`**：
 - 优先 `window.LocationURL`（普通文件夹是 `file:///` URL）。
-- 为空/抛错则回退 `window.Document.Folder.Self.Path`（控制面板等非文件系统位置返回 `::{GUID}` 形式）。
+- 为空/抛错则回退 `GetFolderSelfProperty(window, path: true)`（`Document.Folder.Self.Path`，控制面板等非文件系统位置返回 `::{GUID}` 形式）。
+
+**`GetFolderSelfProperty(dynamic window, bool path)`**：读取 `Document.Folder.Self` 的 `Path`/`Name`；`document`/`folder`/`self` 三级中间 RCW 在 `finally` 中显式释放，避免多次轮询后累积。
 
 **`IsExplorerWindow(dynamic window, out long hwnd)`**：取 `FullName` 与 `ExplorerPath` 比较 + 取 `HWND` 转 long。
 
@@ -131,8 +135,10 @@ ExplorerHubWinForms/
 
 ### 4.2 吸收竞态与退出竞态（已加固）
 - `ExplorerWindowWatcher` 用 `_disposed` 守卫 `Start`/`Stop`/`StopCore`/Tick 回调/`OnForegroundChanged`，防止退出时 WinEvent 排队回调触碰已 Dispose 的 `WinForms.Timer`。
-- `MainForm.OnWindowAbsorbed` / `ShowMainWindow` / 托盘气泡，均加 `_exiting || IsDisposed || Disposing` 守卫，防止退出瞬间被吸收事件唤醒已关闭窗体。
-- `ComputerFolder` 增加桌面目录兜底，避免 `KnownFolders.Computer` 为 null 时启动即抛异常。
+- `MainForm.OnWindowAbsorbed` / `ShowMainWindow` 均加 `_exiting || IsDisposed || Disposing` 守卫，防止退出瞬间被吸收事件唤醒已关闭窗体。
+- `ComputerFolder` 增加桌面目录兜底：先判 `KnownFolders.Computer?.ParsingName` 是否为空再调用 `FromParsingName`（不能把 null 并成空串传入，否则 `FromParsingName("")` 会抛异常使兜底不可达）。
+- `FormClosing` 放行 `WindowsShutDown`/`TaskManagerClosing`/`ApplicationExitCall`，避免阻止系统关机/注销；用户关闭仍隐藏到托盘。
+- `Poll` 先快照式事务化吸收、倒序遍历、并显式释放 `windows`/`window`/嵌套 `Document.Folder.Self` RCW。
 
 ## 5. 当前已知行为 / 注意点
 
@@ -143,7 +149,7 @@ ExplorerHubWinForms/
 - **`.cpl` 或非文件夹 shell 位置**：`ExplorerBrowser.Navigate` 会抛 `CommonControlException`，`Program.cs` 全局已忽略，`ExplorerTabPage.TryNavigate` 也捕获。
 - **常驻托盘**：关闭按钮隐藏到托盘缩略图标；缩小按钮缩到任务栏；仅托盘菜单“退出”真正退出。
 - **空标签页时**：`CloseTab` 若没有标签页则 `Hide()` 到托盘继续后台吸收。
-- 工程在 `D:\CSharp\WorkProject\ExplorerHubWinForms`，可用 `dotnet build` 编译（`net8.0-windows`）。
+- 工程在 `D:\Program\CSharp\WorkProject\ExplorerHubWinForms`，可用 `dotnet build` 编译（`net8.0-windows`）。
 - 若编译报“文件被占用”，说明有运行中的实例（单实例进程），先 `Stop-Process-Name ExplorerHubWinForms` 再编译。
 
 ## 6. 关键数据流（吸收一个 explorer 窗口）
@@ -151,10 +157,12 @@ ExplorerHubWinForms/
 ```
 explorer.exe 新窗口/前台切换
    → SetWinEventHook (EVENT_SYSTEM_FOREGROUND) 触发 OnForegroundChanged
-   → 防抖 80ms → Poll(absorbNew:true)
+   → 防抖 80ms → Poll(absorbNew:true)（倒序遍历窗口）
    → Shell.Windows() 枚举 → IsExplorerWindow 通过
    → IsControlPanel? 是→跳过（不吸收）  否→继续
-   → _seen.Add(hwnd) 判 isNew → GetParsingName → window.Quit() 关闭原窗口
+   → _seen.Add(hwnd) 判 isNew → GetParsingName
    → 触发 WindowAbsorbed → MainForm.OnWindowAbsorbed
    → parsingName 转 ShellObject（file:// → LocalPath）→ AddTab() → ShowMainWindow()
+   → 成功则回填 e.Absorbed=true
+   → watcher 见 Absorbed 才 window.Quit() 关闭原窗口（失败则原窗口保留）
 ```
