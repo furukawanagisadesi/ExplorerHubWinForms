@@ -9,7 +9,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="WindowsAPICodePack" Version="8.0.15.2" />
+    <!-- 固定在 8.0.14: 8.0.15 起 ExplorerBrowser 的 PreFilterMessage 增加了
+         目标/焦点判断, 导致 shell 快捷键(Ctrl+C/Ctrl+V 等)不再通过
+         TranslateAcceleratorIO 下发, 复制粘贴失效。升级前请先验证复制粘贴。
+         参见 Windows-API-CodePack-NET issue #40 与 commit e48985b。 -->
+    <PackageReference Include="WindowsAPICodePack" Version="8.0.14" />
   </ItemGroup>
 
 </Project>

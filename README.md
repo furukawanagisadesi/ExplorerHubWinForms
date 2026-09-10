@@ -15,7 +15,8 @@
 
 - .NET 8 (`net8.0-windows`)
 - Windows Forms (`UseWindowsForms`)
-- NuGet 包：[`WindowsAPICodePack`](https://www.nuget.org/packages/WindowsAPICodePack) 8.0.15.2（提供 `ExplorerBrowser` / `ShellObject` / `Shell` 等）
+- NuGet 包：[`WindowsAPICodePack`](https://www.nuget.org/packages/WindowsAPICodePack) 8.0.14（提供 `ExplorerBrowser` / `ShellObject` / `Shell` 等）
+  - **固定在 8.0.14**：8.0.15 起该库修改了 `ExplorerBrowser.PreFilterMessage`，增加了目标/焦点判断，导致 shell 快捷键（Ctrl+C/Ctrl+V 等）不再下发，复制粘贴失效。升级前请先验证复制粘贴。
 
 ## 构建
 
