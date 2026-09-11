@@ -1,7 +1,7 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）”之后的状态。
 
 ## 1. 项目概览
 
@@ -19,6 +19,7 @@
 ```
 ExplorerHubWinForms/
 ├── ExplorerHubWinForms.csproj     # .NET 8 WinForms 项目，引用 WindowsAPICodePack
+├── app.ico                        # 应用图标（多分辨率 16~256）
 ├── Program.cs                     # 入口：单实例互斥锁 + 异常处理兜底
 ├── MainForm.cs                    # 主窗体：TabControl + 工具栏 + 托盘 + 接线
 ├── ExplorerTabControl.cs          # 自定义 TabControl：处理标签页双击关闭
@@ -30,7 +31,11 @@ ExplorerHubWinForms/
 
 ### 3.1 `ExplorerHubWinForms.csproj`
 - `OutputType=WinExe`，`TargetFramework=net8.0-windows`，`UseWindowsForms=true`，`Nullable=enable`，`ImplicitUsings=enable`。
-- 唯一第三方引用：`WindowsAPICodePack` 8.0.15.2。
+- 唯一第三方引用：`WindowsAPICodePack` 8.0.6（固定版本，勿升级）。
+- **应用图标（本次新增）**：
+  - `<ApplicationIcon>app.ico</ApplicationIcon>`：设置 exe 图标（文件资源管理器、任务栏固定 pin 时显示）。
+  - `<EmbeddedResource Include="app.ico" />`：把多分辨率图标嵌入程序集，逻辑资源名 `ExplorerHubWinForms.app.ico`，供运行时读取。
+- `app.ico` 为多分辨率图标（16/24/32/48/64/128/256），图形为“蓝色文件夹 + 三个标签页头（中间琥珀高亮）”，表达多标签资源管理器；256 帧为 PNG 压缩，小尺寸为 BMP 帧。
 
 ### 3.2 `Program.cs`（入口）
 - **单实例（本次新增）**：
@@ -46,7 +51,9 @@ ExplorerHubWinForms/
   - `ExplorerWindowWatcher _watcher = new()`
   - `ToolStripButton _absorbToggle`（“吸收资源管理器窗口”开关，默认开启）
   - `NotifyIcon _tray`
+  - `Icon _appIcon`（应用图标，本次新增）
   - `bool _exiting`
+- **应用图标（本次新增）**：构造函数调用 `LoadAppIcon()` 从嵌入资源 `ExplorerHubWinForms.app.ico` 读取多分辨率图标，赋给窗体 `Icon`（标题栏 / 运行中任务栏按钮 / Alt-Tab 缩略图）；`_tray.Icon` 也改用同一 `_appIcon`（通知区域托盘图标，替换原 `SystemIcons.Application`）。`LoadAppIcon()` 读取失败时回退 `SystemIcons.Application`；`Dispose` 中释放 `_appIcon`。
 - 顶部工具栏按钮：新建标签页、关闭标签页、分隔符、吸收开关。
 - `_absorbToggle.CheckedChanged`：勾选 → `_watcher.Start()`；取消 → `_watcher.Stop()`。
 - 启动时：`AddTab(null)` 打开一个“此电脑”标签 + `_watcher.Start()`。
@@ -151,6 +158,7 @@ ExplorerHubWinForms/
 - **标签页默认打开“此电脑”**（失败退回桌面目录）。
 - **`.cpl` 或非文件夹 shell 位置**：`ExplorerBrowser.Navigate` 会抛 `CommonControlException`，`Program.cs` 全局已忽略，`ExplorerTabPage.TryNavigate` 也捕获。
 - **常驻托盘**：关闭按钮隐藏到托盘缩略图标；缩小按钮缩到任务栏；仅托盘菜单“退出”真正退出。
+- **应用图标**：exe / 任务栏按钮 / Alt-Tab 缩略图与通知区域托盘图标统一使用 `app.ico`（多标签文件夹图标）。改图标需替换 `app.ico` 后重新编译（`ApplicationIcon` 写入 exe，`EmbeddedResource` 供运行时读取）。
 - **空标签页时**：`CloseTab` 若没有标签页则 `Hide()` 到托盘继续后台吸收。
 - **复制粘贴 / shell 快捷键**：依赖 `ExplorerBrowser` 通过 `TranslateAcceleratorIO` 下发。`WindowsAPICodePack` 固定在 8.0.6，8.0.15+ 会因新增的焦点/目标判断使其失效（详见第 1 节）。
 - **大目录假死**：8.0.9 起 `IncludeObject` 逐条目触发全量 `Items` 重建，大目录 O(N²) 假死；固定在 8.0.6 规避（详见第 1 节）。

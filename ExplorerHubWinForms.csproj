@@ -6,7 +6,14 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- exe 图标: 文件资源管理器、任务栏固定(pin)时显示。 -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 多分辨率图标嵌入程序集, 运行时用于窗体(标题栏/任务栏/Alt-Tab)与托盘。 -->
+    <EmbeddedResource Include="app.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- 固定在 8.0.6: 8.0.9 起 ExplorerBrowser 的 ICommDlgBrowser3.IncludeObject

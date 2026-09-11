@@ -12,11 +12,15 @@ public sealed class MainForm : Form
     private readonly ExplorerWindowWatcher _watcher = new();
     private readonly ToolStripButton _absorbToggle;
     private readonly NotifyIcon _tray;
+    private readonly Icon _appIcon;
     private bool _exiting;
 
     public MainForm()
     {
         Text = "ExplorerHub";
+        // 窗体图标: 标题栏、运行中的任务栏按钮、Alt-Tab 缩略图。
+        _appIcon = LoadAppIcon();
+        Icon = _appIcon;
         // 窗口大小取所有显示器(虚拟桌面)总区域的四分之一, 而非仅主屏。
         // SystemInformation.VirtualScreen 覆盖全部已连接显示器的逻辑桌面范围。
         Width = SystemInformation.VirtualScreen.Width / 2;
@@ -79,7 +83,7 @@ public sealed class MainForm : Form
 
         _tray = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = _appIcon,
             Text = "ExplorerHub",
             Visible = true,
         };
@@ -302,6 +306,14 @@ public sealed class MainForm : Form
         Close();
     }
 
+    /// <summary>从嵌入资源加载多分辨率应用图标; 失败时退回系统默认图标。</summary>
+    private static Icon LoadAppIcon()
+    {
+        using var stream = typeof(MainForm).Assembly
+            .GetManifestResourceStream("ExplorerHubWinForms.app.ico");
+        return stream is null ? SystemIcons.Application : new Icon(stream);
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -309,6 +321,7 @@ public sealed class MainForm : Form
             _watcher.WindowAbsorbed -= OnWindowAbsorbed;
             _watcher.Dispose();
             _tray.Dispose();
+            _appIcon.Dispose();
         }
 
         base.Dispose(disposing);
