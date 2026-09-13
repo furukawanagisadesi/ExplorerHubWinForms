@@ -1,7 +1,7 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（原生凭据框 + 带凭据 URL，watcher 不吸收 FTP 窗口）”之后的状态。
 
 ## 1. 项目概览
 
@@ -82,7 +82,12 @@ ExplorerHubWinForms/
 - 构造时接收 `ShellObject? initialTarget`，默认会导航到目标；无法导航时静默（`showError=false`）。
 - `TryNavigate(target, showError)`：包裹 `ExplorerBrowser.Navigate`，`CommonControlException` 等会被捕获，`showError=true` 时弹窗。
 - `UpdateNavigationState()`：根据 `NavigationLog` 刷新后退/前进/上一级按钮状态和标签标题/地址。整体包 try/catch——该方法由 `ExplorerBrowser` 的 COM 事件回调直接调用，某些 shell 项访问属性会抛异常，不能让异常跨 COM 边界返回。
-- 地址框回车：把文本 `ShellObject.FromParsingName` 后导航，失败弹窗。
+- 地址框回车：若文本是 `ftp://` 地址 → 交给系统资源管理器浏览（见下方 FTP 处理），否则 `ShellObject.FromParsingName` 后导航，失败弹窗。
+- **FTP 处理（本次新增）**：内嵌 `ExplorerBrowser` 浏览 FTP 不可靠——不带用户名的 `ftp://host/` 会先匿名登录、回退具名用户后视图仍绑定失败而显示“此文件夹为空”，进入子目录（尤其含中文/特殊字符，如“生活大爆炸（2007）”）也会空白。原生资源管理器会另开一个带用户名的窗口来规避。因此地址栏回车命中 `ftp` 协议时不再内嵌：
+  - `IsFtpUrl(text, out uri)`：判定协议为 `ftp` 并输出 `Uri`。
+  - `OpenFtpInExplorer(uri)`：若 URL 未同时带用户名和密码，先用 `TryPromptForCredentials` 弹 **Windows 原生凭据框（CredUI，`credui.dll` 的 `CredUIPromptForWindowsCredentials` + `CredUnPackAuthenticationBuffer`）** 收集账号密码，再用 `UriBuilder` 拼出 `ftp://user:pass@host/`；用户取消则不打开。
+  - `OpenInExplorer(url)`：以 `explorer.exe "<url>"` 交给系统资源管理器打开。带凭据的 URL 一次性认证，不再出现“用指定的用户名和密码无法登录到该 FTP 服务器”的匿名失败提示，子目录由系统正常浏览。
+  - 打开后调用 `UpdateNavigationState()` 把地址栏恢复为当前实际位置。
 - **地址框（`_address`，`ToolStripTextBox`）**：`AutoSize=false`，宽度随窗口自动调整。构造时订阅 `toolStrip.Resize` 并调用 `UpdateAddressWidth(toolStrip)`：宽度 = `min(工具栏内容区宽度 × 3/4, 内容区宽度 − 各按钮及边距占用)`。即大窗口下恒为窗口内容区的 3/4，窗口偏窄时自动收缩到刚好放下右侧按钮，避免“复制路径”被挤进溢出菜单。`UpdateAddressWidth` 通过遍历 `toolStrip.Items`（排除地址框本身）累加 `GetPreferredSize(Size.Empty).Width + Margin.Horizontal` 实算预留宽度，不写死常量；用首选宽度而非实时 `Width`，避免某项进入溢出菜单时宽度失真，并带重入守卫。
 - **复制路径按钮（`_copyPath`）**：工具栏里地址框右侧，两者之间用 `ToolStripSeparator()` 留出空隙。点击调用 `CopyCurrentPath()`——把地址框当前显示的路径复制到剪贴板；文本为空则不做任何事，剪贴板访问失败时弹窗提示。
 - 刷新：重新导航到当前目录（`NavigateLogLocation` 到相同索引是空操作，需重导航）。
@@ -113,17 +118,20 @@ ExplorerHubWinForms/
 **`Poll(bool absorbNew)`**：枚举 `Shell.Windows()`，对每个窗口：
 1. `IsExplorerWindow`：`FullName == ExplorerPath` 且 `HWND != 0`，否则跳过。
 2. `IsControlPanel(window)`：若是控制面板 → `continue`，不吸收、不关闭、不登记。
-3. `current.Add(hwnd)`；`isNew = _seen.Add(hwnd)`。
-4. 若 `absorbNew && isNew`：取 `GetParsingName` 构造事件参数并**先触发 `WindowAbsorbed`**；仅当宿主回填 `args.Absorbed == true` 才调用 `window.Quit()` 关闭原窗口并 `absorbedCount++`（事务化，避免“窗口关了、标签没建出来”）。
-5. 循环结束 `_seen.IntersectWith(current)` 清理已消失句柄。
-6. **倒序遍历**（`i` 从 `count-1` 递减）：`Quit()` 会把窗口移出集合，正序会因下标位移而漏掉窗口。
-7. COM 释放：`windows`（外层 `finally`）与每个 `window`（内层 `finally`）各释放一次；`ReleaseComObject` 以 `Marshal.IsComObject` 守卫。`Shell.Windows()` 抛错时 `ReleaseShell()` 释放并重建缓存。
+3. `IsFtpWindow(window)`：若 `GetParsingName` 以 `ftp://` 开头 → `continue`，FTP 交给系统资源管理器独立浏览，不吸收、不关闭（否则原窗口会被关掉并重新内嵌成空白标签页）。
+4. `current.Add(hwnd)`；`isNew = _seen.Add(hwnd)`。
+5. 若 `absorbNew && isNew`：取 `GetParsingName` 构造事件参数并**先触发 `WindowAbsorbed`**；仅当宿主回填 `args.Absorbed == true` 才调用 `window.Quit()` 关闭原窗口并 `absorbedCount++`（事务化，避免“窗口关了、标签没建出来”）。
+6. 循环结束 `_seen.IntersectWith(current)` 清理已消失句柄。
+7. **倒序遍历**（`i` 从 `count-1` 递减）：`Quit()` 会把窗口移出集合，正序会因下标位移而漏掉窗口。
+8. COM 释放：`windows`（外层 `finally`）与每个 `window`（内层 `finally`）各释放一次；`ReleaseComObject` 以 `Marshal.IsComObject` 守卫。`Shell.Windows()` 抛错时 `ReleaseShell()` 释放并重建缓存。
 
 **`OnForegroundChanged`**：`idObject==ObjidWindow && idChild==0 && hwnd!=0` 且 `IsExplorerProcess(hwnd)`（进程名是 explorer）且 `_seen` 不包含该 hwnd 时，设置 `_retriesLeft=20` 并启动防抖 timer。`_disposed` 时直接返回（本次加固——防退出时仍有已排队的 WinEvent 回调访问已释放 Timer）。
 
 **`IsControlPanel(dynamic window)`**：
 - 优先用 `GetParsingName(window)`（即 `LocationURL` 或 `Document.Folder.Self.Path`），判断是否包含 `ControlPanelClsid`（不区分大小写）。该 CLSID 与系统显示语言无关，最可靠。
 - 兜底：`Document.Folder.Self.Name` 是否为 `"Control Panel"` 或 `"控制面板"`。
+
+**`IsFtpWindow(dynamic window)`（本次新增）**：`GetParsingName(window)` 是否以 `ftp://` 开头；命中则 `Poll` 跳过，FTP 窗口既不关闭也不登记（不吸收）。
 
 **`GetParsingName(dynamic window)`**：
 - 优先 `window.LocationURL`（普通文件夹是 `file:///` URL）。
@@ -155,6 +163,7 @@ ExplorerHubWinForms/
 - **单实例**：第二个实例不启动，只把已运行实例的主窗口显示并激活，然后退出。用会话级 Mutex（非 `Global\`）。
 - **只吸收“新出现”的窗口**：`Poll(absorbNew: true)` 由前台钩子 / fallback timer 驱动，且 `_seen` 去重。**启动时已存在的 explorer 窗口不会被吸收**（构造函数记录已有窗口，已落地；需求“启动时吸收已有窗口”用户已明确说“不用了”）。
 - **控制面板不吸收**：控制面板窗口既不会被 `Quit()` 关闭，也不会变成标签页，保持原窗口正常存在。
+- **FTP 不吸收、交系统资源管理器（本次新增）**：地址栏输入 `ftp://` 时不在内嵌 `ExplorerBrowser` 打开（不带用户名会“此文件夹为空”，子目录/中文名会空白）；改为先用 Windows 原生凭据框收集账号密码，再 `explorer.exe "<带凭据的 ftp URL>"` 由系统打开。`ExplorerWindowWatcher` 用 `IsFtpWindow` 跳过所有 FTP 窗口，不吸收、不关闭，避免系统窗口被关掉又内嵌成空白。带凭据 URL 在 `Shell.Windows()` 里形如 `ftp://user:pass@host/`。
 - **标签页默认打开“此电脑”**（失败退回桌面目录）。
 - **`.cpl` 或非文件夹 shell 位置**：`ExplorerBrowser.Navigate` 会抛 `CommonControlException`，`Program.cs` 全局已忽略，`ExplorerTabPage.TryNavigate` 也捕获。
 - **常驻托盘**：关闭按钮隐藏到托盘缩略图标；缩小按钮缩到任务栏；仅托盘菜单“退出”真正退出。
@@ -173,6 +182,7 @@ explorer.exe 新窗口/前台切换
    → 防抖 80ms → Poll(absorbNew:true)（倒序遍历窗口）
    → Shell.Windows() 枚举 → IsExplorerWindow 通过
    → IsControlPanel? 是→跳过（不吸收）  否→继续
+   → IsFtpWindow? 是→跳过（不吸收，交系统资源管理器）  否→继续
    → _seen.Add(hwnd) 判 isNew → GetParsingName
    → 触发 WindowAbsorbed → MainForm.OnWindowAbsorbed
    → parsingName 转 ShellObject（file:// → LocalPath）→ AddTab() → ShowMainWindow()

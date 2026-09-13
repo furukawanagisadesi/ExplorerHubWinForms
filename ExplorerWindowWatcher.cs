@@ -264,6 +264,13 @@ public sealed class ExplorerWindowWatcher : IDisposable
                         continue;
                     }
 
+                    // FTP 位置交给系统资源管理器独立浏览, 不吸收(否则原窗口会被关闭并重新
+                    // 内嵌到标签页, 而内嵌 ExplorerBrowser 浏览 FTP 会显示空白)。
+                    if (IsFtpWindow(window))
+                    {
+                        continue;
+                    }
+
                     current.Add(hwnd);
                     var isNew = _seen.Add(hwnd);
 
@@ -415,6 +422,15 @@ public sealed class ExplorerWindowWatcher : IDisposable
         var name = GetFolderSelfProperty(window, path: false);
         return string.Equals(name, "Control Panel", StringComparison.OrdinalIgnoreCase)
                || string.Equals(name, "控制面板", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 判断某资源管理器窗口是否是 FTP 位置。FTP 由系统资源管理器独立浏览, 不吸收成标签页。
+    /// </summary>
+    private static bool IsFtpWindow(dynamic window)
+    {
+        var parsingName = GetParsingName(window);
+        return parsingName.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsExplorerWindow(dynamic window, out long hwnd)
