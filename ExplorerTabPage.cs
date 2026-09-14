@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using Microsoft.WindowsAPICodePack.Controls;
 using Microsoft.WindowsAPICodePack.Controls.WindowsForms;
 using Microsoft.WindowsAPICodePack.Shell;
@@ -219,12 +218,13 @@ public sealed class ExplorerTabPage : TabPage
             return;
         }
 
-        // ftp:// 在内嵌 ExplorerBrowser 里不可靠: 不带用户名时视图为空, 且进入子目录
-        // (尤其是含中文/特殊字符的目录)也会显示空白。因此不在本程序内嵌入, 直接交给
-        // 系统资源管理器打开; 同时 ExplorerWindowWatcher 也不会吸收 FTP 窗口。
+        // ftp:// 交给系统资源管理器: 以地址栏方式新开一个资源管理器窗口打开该地址,
+        // 后续(凭据输入、进入子目录等)全部由资源管理器负责, 与本程序无关。内嵌
+        // ExplorerBrowser 浏览 FTP 不可靠(不带用户名视图为空, 子目录/中文名会空白);
+        // ExplorerWindowWatcher 也不会吸收 FTP 窗口。
         if (IsFtpUrl(text, out var ftpUri))
         {
-            OpenFtpInExplorer(ftpUri);
+            OpenInExplorer(ftpUri.AbsoluteUri);
             // 地址栏恢复为当前实际位置, 避免残留外部打开的 FTP 地址。
             UpdateNavigationState();
             return;
@@ -256,41 +256,41 @@ public sealed class ExplorerTabPage : TabPage
     }
 
     /// <summary>
-    /// 把 FTP 地址交给系统资源管理器浏览(内嵌 ExplorerBrowser 浏览 FTP 的子目录/中文名
-    /// 会显示空白)。若地址里没有账号密码, 先用 Windows 原生凭据框收集, 再用带凭据的
-    /// URL 打开, 避免资源管理器先匿名登录失败、弹出"无法登录到该 FTP 服务器"的提示。
+    /// 新开一个系统资源管理器窗口浏览该地址, 打开后与本程序无关。
+    /// 必须走 Shell.Application.Open(即资源管理器地址栏那条导航路径), 不能用
+    /// <c>explorer.exe "url"</c>: 后者打开同样的 FTP 视图和"登录身份"框, 但即使用户
+    /// 填对账号密码也会报"用指定的用户名和密码无法登录到该FTP服务器"; 经实测只有
+    /// 地址栏路径(Shell 导航) 或 Shell.Application.Open 能正常登录。
     /// </summary>
-    private void OpenFtpInExplorer(Uri uri)
-    {
-        var target = uri;
-        if (string.IsNullOrEmpty(uri.UserInfo) || !uri.UserInfo.Contains(':'))
-        {
-            if (!TryPromptForCredentials(uri.Host, GetFtpUserName(uri), out var userName, out var password))
-            {
-                return;
-            }
-
-            target = new UriBuilder(uri)
-            {
-                UserName = userName,
-                Password = password,
-            }.Uri;
-        }
-
-        OpenInExplorer(target.AbsoluteUri);
-    }
-
-    private static string GetFtpUserName(Uri uri)
-    {
-        var userInfo = uri.UserInfo;
-        var separator = userInfo.IndexOf(':');
-        var user = separator >= 0 ? userInfo[..separator] : userInfo;
-        return Uri.UnescapeDataString(user);
-    }
-
-    /// <summary>交给系统资源管理器打开该地址。</summary>
     private void OpenInExplorer(string url)
     {
+        // 优先: 通过 Shell 以"地址栏"方式打开 FTP。COM 不可用时再退回 explorer.exe。
+        object? shell = null;
+        try
+        {
+            var shellType = Type.GetTypeFromProgID("Shell.Application");
+            if (shellType != null)
+            {
+                shell = Activator.CreateInstance(shellType);
+                if (shell != null)
+                {
+                    ((dynamic)shell).Open(url);
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"通过 Shell 打开失败, 回退 explorer.exe: {ex}");
+        }
+        finally
+        {
+            if (shell != null && Marshal.IsComObject(shell))
+            {
+                Marshal.ReleaseComObject(shell);
+            }
+        }
+
         try
         {
             var explorerPath = Path.Combine(
@@ -308,123 +308,6 @@ public sealed class ExplorerTabPage : TabPage
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
-
-    /// <summary>
-    /// 弹出 Windows 原生的凭据输入框(与"Windows 安全中心"同款)收集 FTP 账号密码。
-    /// 用户取消时返回 false。
-    /// </summary>
-    private bool TryPromptForCredentials(string host, string initialUserName, out string userName, out string password)
-    {
-        userName = string.Empty;
-        password = string.Empty;
-
-        var info = new CREDUI_INFO
-        {
-            cbSize = Marshal.SizeOf<CREDUI_INFO>(),
-            hwndParent = FindForm()?.Handle ?? Handle,
-            pszCaptionText = "登录 FTP",
-            pszMessageText = $"请输入 FTP 服务器 {host} 的账号和密码",
-            hbmBanner = IntPtr.Zero,
-        };
-
-        var authPackage = 0u;
-        var save = false;
-        var result = CredUIPromptForWindowsCredentials(
-            ref info,
-            0,
-            ref authPackage,
-            IntPtr.Zero,
-            0,
-            out var outBuffer,
-            out var outBufferSize,
-            ref save,
-            CREDUIWIN_GENERIC);
-
-        if (result != 0)
-        {
-            // 用户取消(ERROR_CANCELLED)或调用失败, 都不处理。
-            return false;
-        }
-
-        try
-        {
-            var userLength = 256;
-            var domainLength = 256;
-            var passwordLength = 256;
-            var userBuffer = new StringBuilder(userLength);
-            var domainBuffer = new StringBuilder(domainLength);
-            var passwordBuffer = new StringBuilder(passwordLength);
-
-            if (!CredUnPackAuthenticationBuffer(
-                    0,
-                    outBuffer,
-                    outBufferSize,
-                    userBuffer,
-                    ref userLength,
-                    domainBuffer,
-                    ref domainLength,
-                    passwordBuffer,
-                    ref passwordLength))
-            {
-                return false;
-            }
-
-            userName = userBuffer.ToString();
-            if (string.IsNullOrEmpty(userName))
-            {
-                userName = initialUserName;
-            }
-
-            password = passwordBuffer.ToString();
-            return true;
-        }
-        finally
-        {
-            if (outBuffer != IntPtr.Zero)
-            {
-                LocalFree(outBuffer);
-            }
-        }
-    }
-
-    private const int CREDUIWIN_GENERIC = 0x1;
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct CREDUI_INFO
-    {
-        public int cbSize;
-        public IntPtr hwndParent;
-        [MarshalAs(UnmanagedType.LPWStr)] public string pszMessageText;
-        [MarshalAs(UnmanagedType.LPWStr)] public string pszCaptionText;
-        public IntPtr hbmBanner;
-    }
-
-    [DllImport("credui.dll", CharSet = CharSet.Unicode)]
-    private static extern int CredUIPromptForWindowsCredentials(
-        ref CREDUI_INFO pUiInfo,
-        int dwAuthError,
-        ref uint pulAuthPackage,
-        IntPtr pvInAuthBuffer,
-        uint ulInAuthBufferSize,
-        out IntPtr ppvOutAuthBuffer,
-        out uint pulOutAuthBufferSize,
-        ref bool pfSave,
-        int dwFlags);
-
-    [DllImport("credui.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CredUnPackAuthenticationBuffer(
-        int dwFlags,
-        IntPtr pAuthBuffer,
-        uint cbAuthBuffer,
-        StringBuilder pszUserName,
-        ref int pcchMaxUserName,
-        StringBuilder pszDomainName,
-        ref int pcchMaxDomainName,
-        StringBuilder pszPassword,
-        ref int pcchMaxPassword);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr LocalFree(IntPtr hMem);
 
     /// <summary>
     /// 把当前浏览位置复制到剪贴板。
