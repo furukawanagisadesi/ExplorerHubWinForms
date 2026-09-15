@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace ExplorerHubWinForms;
 
@@ -29,7 +30,8 @@ public sealed class ExplorerWindowAbsorbedEventArgs : EventArgs
 
 /// <summary>
 /// 监视系统中新打开的资源管理器窗口, 把它们关闭并通过 <see cref="WindowAbsorbed"/> 抛给宿主转成标签页。
-/// 检测: EVENT_SYSTEM_FOREGROUND 前台钩子即时触发(防抖 + 重试) + 3 秒低频轮询兜底。
+/// 检测: EVENT_OBJECT_CREATE/SHOW 钩子(窗口一创建就隐藏, 之后 explorer 再显示就再隐藏, 消除闪烁)
+/// + EVENT_SYSTEM_FOREGROUND 前台钩子(防抖 + 重试) + 3 秒低频轮询兜底。
 /// 路径获取: 仍然复用 Shell.Application.Windows() 枚举。
 /// </summary>
 public sealed class ExplorerWindowWatcher : IDisposable
@@ -41,8 +43,14 @@ public sealed class ExplorerWindowWatcher : IDisposable
     private const string ControlPanelClsid = "26EE0668-A00A-44D7-9371-BEB064C98683";
 
     private const uint EventSystemForeground = 0x0003;
+    private const uint EventObjectCreate = 0x8000;
+    private const uint EventObjectShow = 0x8002;
     private const uint WineventOutofcontext = 0x0000;
     private const int ObjidWindow = 0;
+
+    private const int SwHide = 0;
+    private const int SwShowNoActivate = 8;
+    private const string CabinetWindowClass = "CabinetWClass";
 
     private delegate void WinEventDelegate(
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
@@ -59,12 +67,24 @@ public sealed class ExplorerWindowWatcher : IDisposable
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
     private readonly System.Windows.Forms.Timer _debounceTimer;
     private readonly System.Windows.Forms.Timer _fallbackTimer;
     private readonly HashSet<long> _seen = new();
+    private readonly HashSet<long> _hidden = new();
     private readonly WinEventDelegate _winEventDelegate;
+    private readonly WinEventDelegate _shellEventDelegate;
 
     private IntPtr _winEventHook;
+    private IntPtr _createEventHook;
     private dynamic? _shell;
     private int _retriesLeft;
     private bool _disposed;
@@ -104,10 +124,11 @@ public sealed class ExplorerWindowWatcher : IDisposable
                 return;
             }
 
-            Poll(absorbNew: true);
+            Poll(absorbNew: true, revealOrphans: true);
         };
 
         _winEventDelegate = OnForegroundChanged;
+        _shellEventDelegate = OnShellWindowEvent;
     }
 
     public void Start()
@@ -124,6 +145,15 @@ public sealed class ExplorerWindowWatcher : IDisposable
             _winEventHook = SetWinEventHook(
                 EventSystemForeground, EventSystemForeground, IntPtr.Zero,
                 _winEventDelegate, 0, 0, WineventOutofcontext);
+        }
+
+        // 窗口创建/显示都收到通知: 创建时先隐藏, 之后 explorer 若又显示则再隐藏,
+        // 从而在它真正绘制前把窗口藏起来。
+        if (_createEventHook == IntPtr.Zero)
+        {
+            _createEventHook = SetWinEventHook(
+                EventObjectCreate, EventObjectShow, IntPtr.Zero,
+                _shellEventDelegate, 0, 0, WineventOutofcontext);
         }
     }
 
@@ -147,6 +177,15 @@ public sealed class ExplorerWindowWatcher : IDisposable
             UnhookWinEvent(_winEventHook);
             _winEventHook = IntPtr.Zero;
         }
+
+        if (_createEventHook != IntPtr.Zero)
+        {
+            UnhookWinEvent(_createEventHook);
+            _createEventHook = IntPtr.Zero;
+        }
+
+        // 停止时把还隐藏着的窗口还原, 避免留下看不见的窗口。
+        RevealAll();
     }
 
     private void OnForegroundChanged(
@@ -174,6 +213,59 @@ public sealed class ExplorerWindowWatcher : IDisposable
             return;
         }
 
+        ScheduleAbsorb();
+    }
+
+    /// <summary>
+    /// 资源管理器窗口“创建/显示”事件: 新窗口一创建就先隐藏, 之后 explorer 若又显示它则立刻再隐藏,
+    /// 从而尽量不让它真正绘制出来(消除“一闪而过”), 同时安排吸收。仅针对顶层 CabinetWClass 窗口;
+    /// 若最终决定不吸收, 会在 Poll 或停止时还原。
+    /// </summary>
+    private void OnShellWindowEvent(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint idEventThread, uint dwmsEventTime)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (idObject != ObjidWindow || idChild != 0 || hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var key = hwnd.ToInt64();
+
+        // 已被我们隐藏、正在等待吸收的窗口: explorer 若又想显示它, 立即再隐藏。
+        if (_hidden.Contains(key))
+        {
+            if (eventType == EventObjectShow)
+            {
+                ShowWindow(hwnd, SwHide);
+            }
+
+            return;
+        }
+
+        if (eventType != EventObjectCreate || _seen.Contains(key))
+        {
+            return;
+        }
+
+        // 该事件是全系统高频事件, 先用便宜的类名过滤, 再做进程查询。
+        if (!IsCabinetWindow(hwnd) || !IsExplorerProcess(hwnd))
+        {
+            return;
+        }
+
+        Hide(hwnd);
+        ScheduleAbsorb();
+    }
+
+    /// <summary>安排一次防抖吸收, 并允许在窗口尚未进入 Shell.Windows() 时重试。</summary>
+    private void ScheduleAbsorb()
+    {
         _retriesLeft = 20;
         _debounceTimer.Interval = 80;
         _debounceTimer.Stop();
@@ -199,6 +291,63 @@ public sealed class ExplorerWindowWatcher : IDisposable
         }
     }
 
+    /// <summary>是否为资源管理器文件夹顶层窗口(类名 CabinetWClass)。</summary>
+    private static bool IsCabinetWindow(IntPtr hwnd)
+    {
+        var buffer = new StringBuilder(64);
+        var length = GetClassName(hwnd, buffer, buffer.Capacity);
+        return length > 0 && string.Equals(buffer.ToString(), CabinetWindowClass, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 隐藏指定窗口, 尽量赶在它绘制前。跨进程无法用 DWM 遮蔽(会 E_ACCESSDENIED),
+    /// 所以用 ShowWindow(SW_HIDE); explorer 之后若又显示, 由 OnShellWindowEvent 再次隐藏。
+    /// </summary>
+    private void Hide(IntPtr hwnd)
+    {
+        var key = hwnd.ToInt64();
+        if (_hidden.Contains(key))
+        {
+            return;
+        }
+
+        ShowWindow(hwnd, SwHide);
+        _hidden.Add(key);
+    }
+
+    /// <summary>还原被隐藏的窗口。</summary>
+    private void Reveal(IntPtr hwnd)
+    {
+        if (_hidden.Remove(hwnd.ToInt64()))
+        {
+            ShowWindow(hwnd, SwShowNoActivate);
+        }
+    }
+
+    /// <summary>还原所有仍被隐藏的窗口(停止监视或退出时调用)。</summary>
+    private void RevealAll()
+    {
+        foreach (var key in new HashSet<long>(_hidden))
+        {
+            Reveal(new IntPtr(key));
+        }
+    }
+
+    /// <summary>
+    /// 兜底: 还原“被隐藏但始终没有作为可吸收文件夹窗口出现”的窗口, 避免它们一直不可见。
+    /// </summary>
+    private void RevealOrphans(HashSet<long> visited)
+    {
+        foreach (var key in new HashSet<long>(_hidden))
+        {
+            var hwnd = new IntPtr(key);
+            if (!IsWindow(hwnd) || !visited.Contains(key))
+            {
+                Reveal(hwnd);
+            }
+        }
+    }
+
     private dynamic Shell
     {
         get
@@ -214,7 +363,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
         }
     }
 
-    private int Poll(bool absorbNew)
+    private int Poll(bool absorbNew, bool revealOrphans = false)
     {
         var absorbedCount = 0;
 
@@ -233,6 +382,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
         try
         {
             var current = new HashSet<long>();
+            var visited = new HashSet<long>();
             int count;
             try
             {
@@ -265,9 +415,12 @@ public sealed class ExplorerWindowWatcher : IDisposable
                         continue;
                     }
 
-                    // 控制面板不是真正的文件夹, 不吸收, 保持原窗口不动。
+                    visited.Add(hwnd);
+
+                    // 控制面板不是真正的文件夹, 不吸收, 保持原窗口不动(若已被遮蔽则还原)。
                     if (IsControlPanel(window))
                     {
+                        Reveal(new IntPtr(hwnd));
                         continue;
                     }
 
@@ -275,6 +428,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
                     // 内嵌到标签页, 而内嵌 ExplorerBrowser 浏览 FTP 会显示空白)。
                     if (IsFtpWindow(window))
                     {
+                        Reveal(new IntPtr(hwnd));
                         continue;
                     }
 
@@ -290,8 +444,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
                         WindowAbsorbed?.Invoke(this, args);
                         if (!args.Absorbed)
                         {
-                            // 建标签失败: 保留原窗口不动。hwnd 已在 _seen 且仍在 current 中,
+                            // 建标签失败: 还原并保留原窗口。hwnd 已在 _seen 且仍在 current 中,
                             // 后续轮询视为已见, 不会反复重试。
+                            Reveal(new IntPtr(hwnd));
                             continue;
                         }
 
@@ -304,6 +459,8 @@ public sealed class ExplorerWindowWatcher : IDisposable
                             // 忽略关闭失败
                         }
 
+                        // 已被吸收, 窗口正在关闭: 不再需要跟踪隐藏状态。
+                        _hidden.Remove(hwnd);
                         absorbedCount++;
                     }
                 }
@@ -316,6 +473,13 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
             // 移除已经消失的窗口句柄, 防止集合无限增长。
             _seen.IntersectWith(current);
+
+            // 兜底轮询时还原“始终没被当成可吸收窗口”的遮蔽窗口, 避免留下看不见的窗口。
+            if (revealOrphans)
+            {
+                RevealOrphans(visited);
+            }
+
             return absorbedCount;
         }
         finally
