@@ -1,7 +1,7 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）、桌面图标式拖拽换位（半透明影子 + 落点指示线，松手落位）、吸收后保留选中项（“打开文件所在位置”吸收后仍选中该文件）、吸收时窗口创建即隐藏（消除“一闪而过”）”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）、桌面图标式拖拽换位（半透明影子 + 落点指示线，松手落位）、吸收后保留选中项（“打开文件所在位置”吸收后仍选中该文件）、吸收时窗口创建即隐藏（尽量减轻“一闪而过”）、代码审查修复（吸收/选中/线程/拖拽等）”之后的状态。
 
 ## 1. 项目概览
 
@@ -117,38 +117,40 @@ ExplorerHubWinForms/
 
 **整体机制**：
 - 通过 `Shell.Application.Windows()` 枚举系统的 explorer shell 窗口。
-- 触发方式（本次新增）：`EVENT_OBJECT_CREATE..EVENT_OBJECT_SHOW`（0x8000..0x8002，`WineventOutofcontext`）钩子——窗口一创建就 `ShowWindow(SW_HIDE)`，之后 explorer 若又显示则再隐藏，从而消除“一闪而过”；另有 `EVENT_SYSTEM_FOREGROUND` 前台钩子作为补充 + 3 秒低频轮询兜底。
+- 触发方式（本次新增）：`EVENT_OBJECT_CREATE..EVENT_OBJECT_SHOW`（0x8000..0x8002，`WineventOutofcontext`）钩子——窗口一创建就 `ShowWindow(SW_HIDE)`，之后 explorer 若又显示则再隐藏，尽量减轻“一闪而过”（外线程隐藏受 WinEvent 投递延迟影响，可能残留极短闪）；另有 `EVENT_SYSTEM_FOREGROUND` 前台钩子作为补充 + 1.5 秒低频轮询兜底。
 - 钩子触发后：防抖 80ms → `Poll(absorbNew: true)`；若还没吸收到（窗口尚未进入 `Shell.Windows()`），每 50ms 重试，最多约 1 秒（`_retriesLeft=20`）。
 
 **关键成员**：
 - `ExplorerPath`：`%Windows%\explorer.exe`。
 - `ControlPanelClsid = "26EE0668-A00A-44D7-9371-BEB064C98683"`（控制面板 CLSID）。
-- `_winEventHook`（前台）、`_createEventHook`（创建/显示）、`_debounceTimer`(80ms)、`_fallbackTimer`(3000ms)、`HashSet<long> _seen`、`HashSet<long> _hidden`（被我们隐藏、等待吸收的窗口句柄）、`dynamic _shell`、`_retriesLeft`、`bool _disposed`。
+- `_winEventHook`（前台）、`_createEventHook`（创建/显示）、`_debounceTimer`(80ms)、`_fallbackTimer`(1500ms)、`HashSet<long> _seen`、`HashSet<long> _hidden`（被我们隐藏、等待吸收的窗口句柄）、`Dictionary<long,long> _closing`（已吸收、正在关闭的窗口 → 记入时刻）、`StringBuilder _classBuffer`（复用，避免高频事件分配）、`dynamic _shell`、`_retriesLeft`、`bool _disposed`。
 - 事件：`event EventHandler<ExplorerWindowAbsorbedEventArgs> WindowAbsorbed`。`ExplorerWindowAbsorbedEventArgs` 含 `ParsingName`、`SelectedPaths`（源窗口选中的项目路径，用于吸收后恢复选中）与 `Absorbed`（宿主建好标签页后置 true，watcher 才关闭原窗口）。
 
 **生命周期**：
-- `Start()`：若已 `_disposed` 则直接返回；否则启动 fallback timer；挂前台钩子与创建/显示钩子。
+- `Start()`：若已 `_disposed` 则直接返回；**先 `Poll(absorbNew:false)` 记录“当前已存在”的窗口**（避免关掉再打开吸收开关时把它们一股脑吸成标签页）；再启动 fallback timer、挂前台钩子与创建/显示钩子。
 - `Stop()`：若已 `_disposed` 则直接返回；否则调用 `StopCore()`。
-- `StopCore()`：停两个 timer、卸载两个钩子，并 `RevealAll()` 把仍被隐藏的窗口还原（避免留下看不见的窗口）。
+- `StopCore()`：停两个 timer、卸载两个钩子，`RevealAll()` 还原仍被隐藏的窗口，并清空 `_closing`。
 - `Dispose()`（本次加固）：先置位 `_disposed` 再 `StopCore()`、释放 timer、`ReleaseShell()`（释放并清空缓存的 `_shell`）。
 
 **构造函数**：创建两个 timer 和委托；启动时调用一次 `Poll(absorbNew: false)` 记录已存在窗口，避免把已有窗口也吸进来。
 
 **`Poll(bool absorbNew, bool revealOrphans = false)`**：枚举 `Shell.Windows()`，对每个窗口：
-1. `IsExplorerWindow`：`FullName == ExplorerPath` 且 `HWND != 0`，否则跳过；命中则加入 `visited`。
-2. `IsControlPanel(window)`：若是控制面板 → `Reveal(hwnd)` 还原（若被隐藏过）后 `continue`，不吸收、不关闭、不登记。
-3. `IsFtpWindow(window)`：若 `GetParsingName` 以 `ftp://` 开头 → `Reveal(hwnd)` 后 `continue`，FTP 交给系统资源管理器独立浏览，不吸收、不关闭。
-4. `current.Add(hwnd)`；`isNew = _seen.Add(hwnd)`。
-5. 若 `absorbNew && isNew`：取 `GetParsingName` 构造事件参数并**先触发 `WindowAbsorbed`**；仅当宿主回填 `args.Absorbed == true` 才调用 `window.Quit()` 关闭原窗口、从 `_hidden` 移除并 `absorbedCount++`（事务化，避免“窗口关了、标签没建出来”）；失败则 `Reveal(hwnd)` 还原并保留原窗口。
-6. 循环结束 `_seen.IntersectWith(current)` 清理已消失句柄；兜底轮询（`revealOrphans`）时 `RevealOrphans(visited)` 还原“被隐藏但始终不是可吸收文件夹窗口”的窗口。
-7. **倒序遍历**（`i` 从 `count-1` 递减）：`Quit()` 会把窗口移出集合，正序会因下标位移而漏掉窗口。
-8. COM 释放：`windows`（外层 `finally`）与每个 `window`（内层 `finally`）各释放一次；`ReleaseComObject` 以 `Marshal.IsComObject` 守卫。`Shell.Windows()` 抛错时 `ReleaseShell()` 释放并重建缓存。
+1. 开头先 `CleanupClosing()`：处理上一轮“已吸收、正在关闭”的窗口（已消失则清跟踪；超 1s 仍在则认为 `Quit` 失败，`Reveal` 还原，避免永久隐藏）。
+2. `IsExplorerWindow`：`FullName == ExplorerPath` 且 `HWND != 0`，否则跳过；命中则加入 `visited`。
+3. **只取一次** `GetParsingName(window)`（`parsingName`），供下面三处使用（原实现对同一窗口最多算 3 次，重复 COM 读取）。
+4. `IsControlPanel(window, parsingName)`：若是控制面板 → `Reveal(hwnd)` 还原（若被隐藏过）后 `continue`，不吸收、不关闭、不登记。
+5. `IsFtpWindow(parsingName)`：若以 `ftp://` 开头 → `Reveal(hwnd)` 后 `continue`，FTP 交给系统资源管理器独立浏览，不吸收、不关闭。
+6. `current.Add(hwnd)`；`isNew = _seen.Add(hwnd)`。
+7. 若 `absorbNew && isNew`：用 `parsingName` 构造事件参数并**先触发 `WindowAbsorbed`**；仅当宿主回填 `args.Absorbed == true` 才调用 `window.Quit()` 并 `_closing[hwnd]=TickCount`、`absorbedCount++`（事务化，避免“窗口关了、标签没建出来”）；失败则 `Reveal(hwnd)` 还原并保留原窗口。
+8. 循环结束 `_seen.IntersectWith(current)` 清理已消失句柄；兜底轮询（`revealOrphans`）时 `RevealOrphans(visited)` 还原“被隐藏但始终不是可吸收文件夹窗口”的窗口。
+9. **倒序遍历**（`i` 从 `count-1` 递减）：`Quit()` 会把窗口移出集合，正序会因下标位移而漏掉窗口。
+10. COM 释放：`windows`（外层 `finally`）与每个 `window`（内层 `finally`）各释放一次；`ReleaseComObject` 以 `Marshal.IsComObject` 守卫。`Shell.Windows()` 抛错时 `ReleaseShell()` 释放并重建缓存。
 
-**`OnForegroundChanged`**：`idObject==ObjidWindow && idChild==0 && hwnd!=0` 且 `IsExplorerProcess(hwnd)`（进程名是 explorer）且 `_seen` 不包含该 hwnd 时，`ScheduleAbsorb()`。`_disposed` 时直接返回（防退出时仍有已排队的 WinEvent 回调访问已释放 Timer）。
+**`OnForegroundChanged`**：先做便宜的 `idObject==ObjidWindow && idChild==0 && hwnd!=0` 与 `_seen` 判断，再用 `IsCabinetWindow`（类名）过滤，最后才 `IsExplorerProcess(hwnd)`（进程名是 explorer）——避免对每次前台切换（任意进程）都做进程查询；命中且 `_seen` 不含该 hwnd 时 `ScheduleAbsorb()`。`_disposed` 时直接返回（防退出时仍有已排队的 WinEvent 回调访问已释放 Timer）。
 
-**`OnShellWindowEvent`（本次新增，消除吸收闪烁）**：处理 `EVENT_OBJECT_CREATE`/`EVENT_OBJECT_SHOW`。若 hwnd 已在 `_hidden` 中（我们隐藏过、等待吸收）且事件是 SHOW → 再次 `ShowWindow(SW_HIDE)`（explorer 会重新显示，需反复压住）。否则仅对 CREATE 且 `_seen` 不含、`IsCabinetWindow`（类名 `CabinetWClass`）、`IsExplorerProcess` 的窗口 `Hide(hwnd)` 并 `ScheduleAbsorb()`。该事件是全系统高频的，故先做便宜的 `idObject/idChild` 与类名过滤，最后才查进程。
+**`OnShellWindowEvent`（本次新增，减轻吸收闪烁）**：处理 `EVENT_OBJECT_CREATE`/`EVENT_OBJECT_SHOW`。若 hwnd 已在 `_hidden` 中（我们隐藏过、等待吸收）且事件是 SHOW → 再次 `ShowWindow(SW_HIDE)`（explorer 会重新显示，需反复压住）。否则仅对 CREATE 且 `_seen` 不含、`IsCabinetWindow`（类名 `CabinetWClass`）、`IsExplorerProcess` 的窗口 `Hide(hwnd)` 并 `ScheduleAbsorb()`。该事件是全系统高频的，故先做便宜的 `idObject/idChild` 与类名过滤，最后才查进程。
 
-**`Hide` / `Reveal` / `RevealAll` / `RevealOrphans`（本次新增）**：`Hide` 用 `ShowWindow(SW_HIDE)` 并记入 `_hidden`；`Reveal` 用 `ShowWindow(SW_SHOWNA)` 还原；`RevealAll` 在 `StopCore` 调用；`RevealOrphans` 在兜底轮询里还原“被隐藏但始终没出现为可吸收文件夹窗口”的窗口。跨进程 DWM 遮蔽 `DwmSetWindowAttribute(DWMWA_CLOAK)` 实测 `E_ACCESSDENIED`，故不用。
+**`Hide` / `Reveal` / `RevealAll` / `RevealOrphans` / `CleanupClosing`（本次新增）**：`Hide` 用 `ShowWindow(SW_HIDE)` 并记入 `_hidden`；`Reveal` 用 `ShowWindow(SW_SHOWNA)` 还原并移出 `_hidden`；`RevealAll` 在 `StopCore` 调用；`RevealOrphans` 在兜底轮询里还原“被隐藏但始终没出现为可吸收文件夹窗口”的窗口；`CleanupClosing` 在每个 `Poll` 开头处理 `_closing`（已消失→清跟踪；超 1s 仍在→`Reveal` 还原）。跨进程 DWM 遮蔽 `DwmSetWindowAttribute(DWMWA_CLOAK)` 实测 `E_ACCESSDENIED`，故不用。
 
 **`IsControlPanel(dynamic window)`**：
 - 优先用 `GetParsingName(window)`（即 `LocationURL` 或 `Document.Folder.Self.Path`），判断是否包含 `ControlPanelClsid`（不区分大小写）。该 CLSID 与系统显示语言无关，最可靠。
@@ -199,14 +201,15 @@ ExplorerHubWinForms/
 ## 5. 当前已知行为 / 注意点
 
 - **单实例**：第二个实例不启动，只把已运行实例的主窗口显示并激活，然后退出。用会话级 Mutex（非 `Global\`）。
-- **只吸收“新出现”的窗口**：`Poll(absorbNew: true)` 由前台钩子 / fallback timer 驱动，且 `_seen` 去重。**启动时已存在的 explorer 窗口不会被吸收**（构造函数记录已有窗口，已落地；需求“启动时吸收已有窗口”用户已明确说“不用了”）。
+- **只吸收“新出现”的窗口**：`Poll(absorbNew: true)` 由前台钩子 / fallback timer 驱动，且 `_seen` 去重。**启动时已存在的 explorer 窗口不会被吸收**；`Start()`（含关闭后再打开吸收开关）也会先 `Poll(absorbNew:false)` 记录当时已有窗口，所以重新打开开关不会把当时已打开的窗口吸成标签页（构造函数也记录一次）。
 - **控制面板不吸收**：控制面板窗口既不会被 `Quit()` 关闭，也不会变成标签页，保持原窗口正常存在。
 - **FTP 不吸收、交系统资源管理器（本次修改）**：地址栏输入 `ftp://` 时不在内嵌 `ExplorerBrowser` 打开（不带用户名会“此文件夹为空”，子目录/中文名会空白），也不在 app 内弹凭据框；改用 `Shell.Application.Open("<原样 ftp URL>")` 以地址栏方式新开系统资源管理器窗口（实测 `explorer.exe "ftp://..."` 会登录失败），后续凭据输入与浏览全由资源管理器负责。`ExplorerWindowWatcher` 用 `IsFtpWindow` 跳过所有 FTP 窗口，不吸收、不关闭，避免系统窗口被关掉又内嵌成空白。
 - **标签页默认打开“此电脑”**（失败退回桌面目录）。
 - **标签页可拖拽换位（桌面图标式）**：按住标签头拖动出现半透明影子跟随鼠标，竖直指示线标出落点，松开才落位；换位通过 `TabPages` 移除+插入实现，`ExplorerBrowser` 浏览状态应随之保留（若发现状态丢失，需改为换位后重导航）。
 - **同名标签区分（本次新增）**：末尾文件夹同名的多个标签，标题自动加父级括注（如 `2026-09-15 (慧医卡)`），父级也同名时自动上升一级；悬停任意标签显示完整路径（`ToolTipText = FullPath`，依赖 `TabControl.ShowToolTips=true`）；关闭重名标签后其余标题自动复原为纯叶子名。非文件系统位置（如“此电脑”）用显示名，若重名且无更多层级则以序号兜底。
 - **吸收后保留选中项（本次新增）**：别的软件“打开文件所在位置”打开的资源管理器窗口，源窗口里有选中项；`ExplorerWindowWatcher.GetSelectedPaths` 在关闭前读出这些路径，经事件参数/`AddTab` 传到标签页，导航到位后用 `ShellItemSelector` 选中。只对文件系统路径有效；普通打开文件夹无选中项，不受影响。
-- **吸收不再“一闪而过”（本次新增）**：`EVENT_OBJECT_CREATE/SHOW` 钩子在新窗口创建时就把 explorer 窗口 `ShowWindow(SW_HIDE)`，之后 explorer 再显示就再隐藏，直到被吸收关闭；若判定不吸收（控制面板/FTP/建标签失败）或停止监视则 `Reveal` 还原。跨进程 DWM 遮蔽会 `E_ACCESSDENIED`，故用 `ShowWindow`。窗口隐藏期间仍能被 `Shell.Windows()` 枚举到，吸收照常进行（实测吸收约在 +0.8s 完成，期间窗口不可见）。
+- **吸收尽量减轻“一闪而过”（本次新增）**：`EVENT_OBJECT_CREATE/SHOW` 钩子在新窗口创建时就把 explorer 窗口 `ShowWindow(SW_HIDE)`，之后 explorer 再显示就再隐藏，直到被吸收关闭；若判定不吸收（控制面板/FTP/建标签失败）或停止监视则 `Reveal` 还原。跨进程 DWM 遮蔽会 `E_ACCESSDENIED`，故用 `ShowWindow`。窗口隐藏期间仍能被 `Shell.Windows()` 枚举到，吸收照常进行（实测吸收约在 +0.8s 完成，期间窗口不可见）。**注意**：外线程隐藏受 WinEvent 投递延迟影响，可能残留极短闪；控制面板/FTP 这类“先隐藏再放行”的窗口会出现约几十毫秒的延迟（兜底轮询 1.5s）。
+- **代码审查后修复（本次）**：① `Start()` 先标记已有窗口（见上）；② 吸收后若 `Quit()` 超过 1s 窗口仍在，`CleanupClosing` 还原，避免原窗口被永久隐藏；③ 恢复选中在 `TrySelect` 成功前不清空，最多重试 5 次；④ `ExplorerTabPage` 导航事件与 `MainForm.UpdateTabTitles` 增加 UI 线程兜底；⑤ 拖拽落点改为按光标所在标签判定（多行标签条也正确）；⑥ `Poll` 对同一窗口只解析一次路径，`IsCabinetWindow` 复用缓冲，`OnForegroundChanged` 先按类名过滤以减少进程查询。
 - **`.cpl` 或非文件夹 shell 位置**：`ExplorerBrowser.Navigate` 会抛 `CommonControlException`，`Program.cs` 全局已忽略，`ExplorerTabPage.TryNavigate` 也捕获。
 - **常驻托盘**：关闭按钮隐藏到托盘缩略图标；缩小按钮缩到任务栏；仅托盘菜单“退出”真正退出。
 - **应用图标**：exe / 任务栏按钮 / Alt-Tab 缩略图与通知区域托盘图标统一使用 `app.ico`（多标签文件夹图标）。改图标需替换 `app.ico` 后重新编译（`ApplicationIcon` 写入 exe，`EmbeddedResource` 供运行时读取）。

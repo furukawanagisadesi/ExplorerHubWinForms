@@ -205,6 +205,26 @@ public sealed class ExplorerTabControl : TabControl
     /// </summary>
     private int ComputeDropIndex(Point cursor)
     {
+        // 光标正落在某个标签上: 以该标签为锚点, 按其左右半区决定插到它前/后——多行标签条也正确。
+        var hit = TabIndexAt(cursor);
+        if (hit >= 0 && hit != _dragIndex)
+        {
+            var hitRect = GetTabRect(hit);
+            var before = cursor.X < hitRect.Left + hitRect.Width / 2;
+
+            var hitPosition = 0;
+            for (var i = 0; i < hit; i++)
+            {
+                if (i != _dragIndex)
+                {
+                    hitPosition++;
+                }
+            }
+
+            return before ? hitPosition : hitPosition + 1;
+        }
+
+        // 光标在标签行空白处: 退回按 X 与各标签中点比较(结果为“去掉被拖标签后”的插入位)。
         var position = 0;
         for (var i = 0; i < TabCount; i++)
         {

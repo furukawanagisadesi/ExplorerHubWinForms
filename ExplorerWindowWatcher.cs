@@ -30,8 +30,9 @@ public sealed class ExplorerWindowAbsorbedEventArgs : EventArgs
 
 /// <summary>
 /// 监视系统中新打开的资源管理器窗口, 把它们关闭并通过 <see cref="WindowAbsorbed"/> 抛给宿主转成标签页。
-/// 检测: EVENT_OBJECT_CREATE/SHOW 钩子(窗口一创建就隐藏, 之后 explorer 再显示就再隐藏, 消除闪烁)
-/// + EVENT_SYSTEM_FOREGROUND 前台钩子(防抖 + 重试) + 3 秒低频轮询兜底。
+/// 检测: EVENT_OBJECT_CREATE/SHOW 钩子(窗口一创建就隐藏, 之后 explorer 再显示就再隐藏) +
+/// EVENT_SYSTEM_FOREGROUND 前台钩子(防抖 + 重试) + 1.5 秒低频轮询兜底。
+/// 注意: 外线程隐藏受 WinEvent 投递延迟影响, 只能“尽量减轻”闪烁, 可能残留极短闪。
 /// 路径获取: 仍然复用 Shell.Application.Windows() 枚举。
 /// </summary>
 public sealed class ExplorerWindowWatcher : IDisposable
@@ -80,6 +81,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
     private readonly System.Windows.Forms.Timer _fallbackTimer;
     private readonly HashSet<long> _seen = new();
     private readonly HashSet<long> _hidden = new();
+    // 已吸收、正在关闭的窗口 → 记入时刻; 给 Quit 一点时间, 超时仍存在才认为关闭失败并还原。
+    private readonly Dictionary<long, long> _closing = new();
+    private readonly StringBuilder _classBuffer = new(64);
     private readonly WinEventDelegate _winEventDelegate;
     private readonly WinEventDelegate _shellEventDelegate;
 
@@ -115,8 +119,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
             }
         };
 
-        // 低频兜底: 补上钩子可能漏掉的窗口(后台创建、Explorer 重启等)。
-        _fallbackTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+        // 低频兜底: 补上钩子可能漏掉的窗口(后台创建、Explorer 重启等), 并还原“被隐藏后
+        // 一直没归入可吸收窗口”的孤儿窗口(如瞬态窗口), 所以间隔取小一些(1.5s)以限制其不可见时长。
+        _fallbackTimer = new System.Windows.Forms.Timer { Interval = 1500 };
         _fallbackTimer.Tick += (_, _) =>
         {
             if (_disposed)
@@ -137,6 +142,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
         {
             return;
         }
+
+        // 先记录“当前已存在”的窗口, 避免关掉再打开吸收开关时把它们一股脑吸成标签页。
+        Poll(absorbNew: false);
 
         _fallbackTimer.Start();
 
@@ -186,6 +194,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
         // 停止时把还隐藏着的窗口还原, 避免留下看不见的窗口。
         RevealAll();
+        _closing.Clear();
     }
 
     private void OnForegroundChanged(
@@ -202,13 +211,14 @@ public sealed class ExplorerWindowWatcher : IDisposable
             return;
         }
 
-        if (!IsExplorerProcess(hwnd))
+        // 切换到已存在的资源管理器窗口不需要处理(先做便宜的集合判断)。
+        if (_seen.Contains(hwnd.ToInt64()))
         {
             return;
         }
 
-        // 切换到已存在的资源管理器窗口不需要处理。
-        if (_seen.Contains(hwnd.ToInt64()))
+        // 先用便宜的类名过滤, 避免对每次前台切换(任意进程)都做进程查询。
+        if (!IsCabinetWindow(hwnd) || !IsExplorerProcess(hwnd))
         {
             return;
         }
@@ -218,7 +228,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
     /// <summary>
     /// 资源管理器窗口“创建/显示”事件: 新窗口一创建就先隐藏, 之后 explorer 若又显示它则立刻再隐藏,
-    /// 从而尽量不让它真正绘制出来(消除“一闪而过”), 同时安排吸收。仅针对顶层 CabinetWClass 窗口;
+    /// 尽量减轻“一闪而过”, 同时安排吸收。仅针对顶层 CabinetWClass 窗口;
     /// 若最终决定不吸收, 会在 Poll 或停止时还原。
     /// </summary>
     private void OnShellWindowEvent(
@@ -291,12 +301,14 @@ public sealed class ExplorerWindowWatcher : IDisposable
         }
     }
 
-    /// <summary>是否为资源管理器文件夹顶层窗口(类名 CabinetWClass)。</summary>
-    private static bool IsCabinetWindow(IntPtr hwnd)
+    /// <summary>
+    /// 是否为资源管理器文件夹顶层窗口(类名 CabinetWClass)。复用缓冲, 避免高频事件里反复分配。
+    /// </summary>
+    private bool IsCabinetWindow(IntPtr hwnd)
     {
-        var buffer = new StringBuilder(64);
-        var length = GetClassName(hwnd, buffer, buffer.Capacity);
-        return length > 0 && string.Equals(buffer.ToString(), CabinetWindowClass, StringComparison.Ordinal);
+        _classBuffer.Clear();
+        var length = GetClassName(hwnd, _classBuffer, _classBuffer.Capacity);
+        return length > 0 && string.Equals(_classBuffer.ToString(), CabinetWindowClass, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -321,6 +333,43 @@ public sealed class ExplorerWindowWatcher : IDisposable
         if (_hidden.Remove(hwnd.ToInt64()))
         {
             ShowWindow(hwnd, SwShowNoActivate);
+        }
+    }
+
+    /// <summary>
+    /// 处理“已吸收、正在关闭”的窗口: 已消失则清掉跟踪; 仍存在(Quit 没生效)则还原并显示,
+    /// 避免原窗口被永久隐藏。
+    /// </summary>
+    private void CleanupClosing()
+    {
+        if (_closing.Count == 0)
+        {
+            return;
+        }
+
+        const long closeGraceMs = 1000;
+        var now = Environment.TickCount64;
+
+        foreach (var pair in _closing.ToArray())
+        {
+            var key = pair.Key;
+            var hwnd = new IntPtr(key);
+
+            if (!IsWindow(hwnd))
+            {
+                // 已关闭: 清掉跟踪。
+                _closing.Remove(key);
+                _hidden.Remove(key);
+                continue;
+            }
+
+            // 仍在: 超过宽限期就认为 Quit 没生效, 还原显示, 避免永久隐藏。
+            if (now - pair.Value >= closeGraceMs)
+            {
+                Reveal(hwnd);
+                _closing.Remove(key);
+                _hidden.Remove(key);
+            }
         }
     }
 
@@ -381,6 +430,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
         try
         {
+            // 先处理上一轮“已吸收、正在关闭”的窗口: 已消失则清理跟踪; 仍在则还原(Quit 失败)。
+            CleanupClosing();
+
             var current = new HashSet<long>();
             var visited = new HashSet<long>();
             int count;
@@ -406,7 +458,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
                     continue;
                 }
 
-                // 每个 window 都是一次 COM 调用产生的 RCW, 用后必须释放, 否则 3 秒轮询会持续累积。
+                // 每个 window 都是一次 COM 调用产生的 RCW, 用后必须释放, 否则低频轮询会持续累积。
                 try
                 {
                     long hwnd;
@@ -417,8 +469,11 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
                     visited.Add(hwnd);
 
-                    // 控制面板不是真正的文件夹, 不吸收, 保持原窗口不动(若已被遮蔽则还原)。
-                    if (IsControlPanel(window))
+                    // 解析名(LocationURL / Folder.Self.Path)只取一次, 后面三处都要用。
+                    var parsingName = GetParsingName(window);
+
+                    // 控制面板不是真正的文件夹, 不吸收, 保持原窗口不动(若已被隐藏则还原)。
+                    if (IsControlPanel(window, parsingName))
                     {
                         Reveal(new IntPtr(hwnd));
                         continue;
@@ -426,7 +481,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
                     // FTP 位置交给系统资源管理器独立浏览, 不吸收(否则原窗口会被关闭并重新
                     // 内嵌到标签页, 而内嵌 ExplorerBrowser 浏览 FTP 会显示空白)。
-                    if (IsFtpWindow(window))
+                    if (IsFtpWindow(parsingName))
                     {
                         Reveal(new IntPtr(hwnd));
                         continue;
@@ -437,8 +492,7 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
                     if (absorbNew && isNew)
                     {
-                        var args = new ExplorerWindowAbsorbedEventArgs(
-                            GetParsingName(window), GetSelectedPaths(window));
+                        var args = new ExplorerWindowAbsorbedEventArgs(parsingName, GetSelectedPaths(window));
 
                         // 先让宿主建标签页, 建成功后才关闭原窗口, 保证不会“窗口关了、标签没建出来”。
                         WindowAbsorbed?.Invoke(this, args);
@@ -459,8 +513,9 @@ public sealed class ExplorerWindowWatcher : IDisposable
                             // 忽略关闭失败
                         }
 
-                        // 已被吸收, 窗口正在关闭: 不再需要跟踪隐藏状态。
-                        _hidden.Remove(hwnd);
+                        // 关闭是异步的: 先记入 _closing, 下一轮 Poll 确认窗口已消失再清理跟踪;
+                        // 若超过宽限期窗口仍在(Quit 没生效), 由 CleanupClosing 还原, 避免永久隐藏。
+                        _closing[hwnd] = Environment.TickCount64;
                         absorbedCount++;
                     }
                 }
@@ -639,11 +694,10 @@ public sealed class ExplorerWindowWatcher : IDisposable
     /// 判断某资源管理器窗口是否是“控制面板”。控制面板是虚拟文件夹,
     /// 解析名 / 文件夹路径固定包含 ControlPanel CLSID, 命中则跳过吸收。
     /// </summary>
-    private static bool IsControlPanel(dynamic window)
+    private static bool IsControlPanel(dynamic window, string parsingName)
     {
         // 优先用解析名(LocationURL 或 Document.Folder.Self.Path)里是否含控制面板 CLSID,
         // 该标识与操作系统显示语言无关, 最可靠。
-        var parsingName = GetParsingName(window);
         if (!string.IsNullOrEmpty(parsingName) &&
             parsingName.IndexOf(ControlPanelClsid, StringComparison.OrdinalIgnoreCase) >= 0)
         {
@@ -659,9 +713,8 @@ public sealed class ExplorerWindowWatcher : IDisposable
     /// <summary>
     /// 判断某资源管理器窗口是否是 FTP 位置。FTP 由系统资源管理器独立浏览, 不吸收成标签页。
     /// </summary>
-    private static bool IsFtpWindow(dynamic window)
+    private static bool IsFtpWindow(string parsingName)
     {
-        var parsingName = GetParsingName(window);
         return parsingName.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase);
     }
 

@@ -23,6 +23,9 @@ public sealed class ExplorerTabPage : TabPage
     private IReadOnlyList<string> _pathSegments = new[] { "新标签页" };
     private string _fullPath = string.Empty;
     private IReadOnlyList<string> _pendingSelection = Array.Empty<string>();
+    private int _selectionAttempts;
+
+    private const int MaxSelectionAttempts = 5;
 
     public ExplorerBrowser Browser => _browser;
 
@@ -176,11 +179,24 @@ public sealed class ExplorerTabPage : TabPage
 
     private void OnNavigationLogChanged(object? sender, NavigationLogEventArgs e)
     {
+        // ExplorerBrowser 的 COM 事件理论上在 UI 线程, 这里兜一层, 避免任何情况下跨线程访问控件。
+        if (InvokeRequired)
+        {
+            BeginInvoke((MethodInvoker)(() => OnNavigationLogChanged(sender, e)));
+            return;
+        }
+
         UpdateNavigationState();
     }
 
     private void OnNavigationComplete(object? sender, NavigationCompleteEventArgs e)
     {
+        if (InvokeRequired)
+        {
+            BeginInvoke((MethodInvoker)(() => OnNavigationComplete(sender, e)));
+            return;
+        }
+
         UpdateNavigationState();
         ApplyPendingSelection();
     }
@@ -214,8 +230,12 @@ public sealed class ExplorerTabPage : TabPage
                     return;
                 }
 
-                ShellItemSelector.TrySelect(_browser, selection);
-                _pendingSelection = Array.Empty<string>();
+                // 成功才清空; 失败(视图可能尚未填充)则保留, 下次导航再试, 最多重试若干次。
+                if (ShellItemSelector.TrySelect(_browser, selection)
+                    || ++_selectionAttempts >= MaxSelectionAttempts)
+                {
+                    _pendingSelection = Array.Empty<string>();
+                }
             }));
         }
         catch (Exception ex)

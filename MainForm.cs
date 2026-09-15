@@ -8,6 +8,8 @@ namespace ExplorerHubWinForms;
 /// </summary>
 public sealed class MainForm : Form
 {
+    private const int WmLeftButtonDoubleClick = 0x0203;
+
     private readonly ExplorerTabControl _tabs;
     private readonly ExplorerWindowWatcher _watcher = new();
     private readonly ToolStripButton _absorbToggle;
@@ -227,6 +229,13 @@ public sealed class MainForm : Form
     /// </summary>
     private void UpdateTabTitles()
     {
+        // 兜底: 若被非 UI 线程调用, 切回 UI 线程(改 TabPage.Text 是控件操作)。
+        if (InvokeRequired)
+        {
+            BeginInvoke((MethodInvoker)UpdateTabTitles);
+            return;
+        }
+
         var pages = _tabs.TabPages.OfType<ExplorerTabPage>().ToList();
 
         foreach (var page in pages)
@@ -381,7 +390,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        if (m.Msg == 0x0203) // WM_LBUTTONDBLCLK
+        if (m.Msg == WmLeftButtonDoubleClick) // WM_LBUTTONDBLCLK
         {
             var p = m.LParam.ToInt64();
             var client = new Point((short)(p & 0xFFFF), (short)((p >> 16) & 0xFFFF));
