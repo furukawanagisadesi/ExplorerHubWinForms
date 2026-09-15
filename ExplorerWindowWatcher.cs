@@ -5,13 +5,20 @@ namespace ExplorerHubWinForms;
 
 public sealed class ExplorerWindowAbsorbedEventArgs : EventArgs
 {
-    public ExplorerWindowAbsorbedEventArgs(string parsingName)
+    public ExplorerWindowAbsorbedEventArgs(string parsingName, IReadOnlyList<string>? selectedPaths = null)
     {
         ParsingName = parsingName;
+        SelectedPaths = selectedPaths ?? Array.Empty<string>();
     }
 
     /// <summary>被吸收窗口的地址, 可能是 file:/// URL 或 ::{GUID} 形式的 shell 解析名。</summary>
     public string ParsingName { get; }
+
+    /// <summary>
+    /// 被吸收窗口在被关闭前选中的项目路径(如“打开文件所在位置”时选中的那个文件)。
+    /// 宿主建好标签页后据此恢复选中; 无选中时为空。
+    /// </summary>
+    public IReadOnlyList<string> SelectedPaths { get; }
 
     /// <summary>
     /// 宿主是否已成功创建对应标签页。只有为 true 时 watcher 才会关闭原资源管理器窗口,
@@ -276,7 +283,8 @@ public sealed class ExplorerWindowWatcher : IDisposable
 
                     if (absorbNew && isNew)
                     {
-                        var args = new ExplorerWindowAbsorbedEventArgs(GetParsingName(window));
+                        var args = new ExplorerWindowAbsorbedEventArgs(
+                            GetParsingName(window), GetSelectedPaths(window));
 
                         // 先让宿主建标签页, 建成功后才关闭原窗口, 保证不会“窗口关了、标签没建出来”。
                         WindowAbsorbed?.Invoke(this, args);
@@ -401,6 +409,66 @@ public sealed class ExplorerWindowWatcher : IDisposable
             ReleaseComObject(folderObject);
             ReleaseComObject(documentObject);
         }
+    }
+
+    /// <summary>
+    /// 读取某资源管理器窗口当前选中的项目路径。用于“打开文件所在位置”这类窗口: 吸收后仍能
+    /// 选中原文件。Document.SelectedItems() 返回 FolderItems, 逐项取 Path; 虚拟项(Path 为空)
+    /// 跳过。中间 COM 对象用后显式释放。
+    /// </summary>
+    private static IReadOnlyList<string> GetSelectedPaths(dynamic window)
+    {
+        var result = new List<string>();
+        dynamic? items = null;
+
+        try
+        {
+            items = window.Document.SelectedItems();
+
+            int count;
+            try
+            {
+                count = (int)items.Count;
+            }
+            catch
+            {
+                return result;
+            }
+
+            for (var i = 0; i < count; i++)
+            {
+                dynamic? item = null;
+                try
+                {
+                    item = items.Item(i);
+                    var path = (string)item.Path;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        result.Add(path);
+                    }
+                }
+                catch
+                {
+                    // 忽略取不到路径的项目
+                }
+                finally
+                {
+                    object? itemObject = item;
+                    ReleaseComObject(itemObject);
+                }
+            }
+        }
+        catch
+        {
+            // SelectedItems 不可用则视为无选中
+        }
+        finally
+        {
+            object? itemsObject = items;
+            ReleaseComObject(itemsObject);
+        }
+
+        return result;
     }
 
     /// <summary>

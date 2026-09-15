@@ -1,7 +1,7 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）、桌面图标式拖拽换位（半透明影子 + 落点指示线，松手落位）”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）、桌面图标式拖拽换位（半透明影子 + 落点指示线，松手落位）、吸收后保留选中项（“打开文件所在位置”吸收后仍选中该文件）”之后的状态。
 
 ## 1. 项目概览
 
@@ -26,6 +26,7 @@ ExplorerHubWinForms/
 ├── TabDragGhost.cs                # 拖拽标签时跟随鼠标的半透明影子窗口
 ├── TabDropIndicator.cs            # 拖拽时标出落点的竖直指示线窗口
 ├── ExplorerTabPage.cs             # 单个标签页：导航工具栏 + 原生 ExplorerBrowser（上报当前路径信息）
+├── ShellItemSelector.cs           # 让内嵌 ExplorerBrowser 选中指定路径的项目（反射 + shell 互操作）
 └── ExplorerWindowWatcher.cs       # 监视并“吸收”资源管理器窗口的核心类（已含控制面板排除）
 ```
 
@@ -67,8 +68,8 @@ ExplorerHubWinForms/
 - 双击标签关闭（监听 `_tabs.TabDoubleClicked`，由 `ExplorerTabControl` 触发）。
 - **标签标题（本次新增）**：`AddTab` 订阅 `ExplorerTabPage.CurrentLocationChanged`；`AddTab` / `CloseTab` / 任一标签位置变化时统一调用 `UpdateTabTitles()`。
   - `UpdateTabTitles()`：先把每个标签 `ToolTipText` 设为完整路径；再按 `DisplayName` 分组。未重名直接显示叶子名；重名时 `FindDistinguishingDepth` 找到能让该组互不相同的最小父级层级，标题显示成 `叶子名 (祖先名)`（如 `2026-09-15 (慧医卡)`）；若该级祖先名在组内仍撞名则退回完整祖先链（`AncestorChain`）；若完整路径也相同（同一文件夹开了多个标签）则按顺序编号兜底。辅助方法：`QualifiedName`（末 depth+1 级限定名）、`AncestorAtLevel`、`AncestorChain`。
-- `AddTab(ShellObject? target)`：新建 `ExplorerTabPage`（默认“此电脑”），订阅 `CurrentLocationChanged`，加入并选中后调用 `UpdateTabTitles()`。
-- `OnWindowAbsorbed`：程序退出中（`_exiting || IsDisposed || Disposing`）则忽略；否则把 `ParsingName` 转成 `ShellObject` 并新增标签页，然后 `ShowMainWindow()`；`file:///` URL 会转成本地路径；转换/识别失败则回退到“此电脑”。整个方法包在 try/catch 中，异常不会冒泡中断计时器驱动的吸收循环。**成功建好标签后设置 `e.Absorbed = true`**，watcher 据此才关闭原窗口（事务化吸收）。
+- `AddTab(ShellObject? target, IReadOnlyList<string>? selectedPaths = null)`：新建 `ExplorerTabPage`（默认“此电脑”，并把 `selectedPaths` 传下去用于恢复选中），订阅 `CurrentLocationChanged`，加入并选中后调用 `UpdateTabTitles()`。
+- `OnWindowAbsorbed`：程序退出中（`_exiting || IsDisposed || Disposing`）则忽略；否则把 `ParsingName` 转成 `ShellObject` 并 `AddTab(target, e.SelectedPaths)` 新增标签页（把源窗口选中项一并带入），然后 `ShowMainWindow()`；`file:///` URL 会转成本地路径；转换/识别失败则回退到“此电脑”。整个方法包在 try/catch 中，异常不会冒泡中断计时器驱动的吸收循环。**成功建好标签后设置 `e.Absorbed = true`**，watcher 据此才关闭原窗口（事务化吸收）。
 - `ShowMainWindow()`：若没有标签页则新建一个，然后显示并激活主窗；同上也做了退出中守卫。
 - `CloseTab(tab)`：先退订 `CurrentLocationChanged`，再移除并 Dispose 标签页；若无标签页则 `Hide()` 到托盘继续后台吸收；最后 `UpdateTabTitles()`（关掉重名标签后其余标题自动复原为纯叶子名）。
 - `ExitApplication()`：`_exiting=true`、隐藏托盘、`Close()`。
@@ -95,7 +96,8 @@ ExplorerHubWinForms/
 ### 3.5 `ExplorerTabPage.cs`（单个标签页）
 - 继承 `TabPage`。
 - 持有：`ExplorerBrowser _browser`（`Dock=Fill`）、导航工具栏（后退/前进/上一级/刷新/地址框/复制路径）。
-- **位置信息上报（本次新增）**：不再自行设置标签标题（原先在 `UpdateNavigationState` 里 `Text = location.Name` 已移除），改为暴露 `DisplayName`（叶子名）、`PathSegments`（文件系统按 `ParsingName` 分隔符拆分的各级名，非文件系统只有叶子名）、`FullPath`（悬停提示用完整路径），并在位置变化时触发 `CurrentLocationChanged` 事件，由 `MainForm` 统一计算标题。注意事件名不能叫 `LocationChanged`——`Control` 已有同名事件。解析见 `SetLocation` / `BuildPathSegments`。
+- **位置信息上报（本次新增）**：不再自行设置标签标题（原先在 `UpdateNavigationState` 里 `Text = location.Name` 已移除），改为暴露 `DisplayName`（叶子名）、`PathSegments`（文件系统按 `ParsingName` 分隔符拆分的各级名，非文件系统只有叶子名）、`FullPath`（悬停提示用完整路径），并在位置变化时触发 `CurrentLocationChanged` 事件，由 `MainForm` 统一计算标题。 注意事件名不能叫 `LocationChanged`——`Control` 已有同名事件。解析见 `SetLocation` / `BuildPathSegments`。
+- **吸收后恢复选中（本次新增）**：构造函数接收可选 `selectedPaths` 存入 `_pendingSelection`；`OnNavigationComplete` 里调用 `ApplyPendingSelection()`——用 `_browser.BeginInvoke` 排到消息队列末尾，先 `ShellItemSelector.IsAtParentFolder` 确认已导航到目标文件夹（避开 ExplorerBrowser 初始化时的桌面视图），再 `ShellItemSelector.TrySelect`，成功后清空待选。不会因用户后续导航反复触发。
 - 构造时接收 `ShellObject? initialTarget`，默认会导航到目标；无法导航时静默（`showError=false`）。
 - `TryNavigate(target, showError)`：包裹 `ExplorerBrowser.Navigate`，`CommonControlException` 等会被捕获，`showError=true` 时弹窗。
 - `UpdateNavigationState()`：根据 `NavigationLog` 刷新后退/前进/上一级按钮状态、地址栏，并调用 `SetLocation` 记录位置信息（标题改由 `MainForm` 计算）。整体包 try/catch——该方法由 `ExplorerBrowser` 的 COM 事件回调直接调用，某些 shell 项访问属性会抛异常，不能让异常跨 COM 边界返回。
@@ -122,7 +124,7 @@ ExplorerHubWinForms/
 - `ExplorerPath`：`%Windows%\explorer.exe`。
 - `ControlPanelClsid = "26EE0668-A00A-44D7-9371-BEB064C98683"`（控制面板 CLSID）。
 - `WinEventHook`、`_debounceTimer`(80ms)、`_fallbackTimer`(3000ms)、`HashSet<long> _seen`、`dynamic _shell`、`_retriesLeft`、`bool _disposed`（本次新增）。
-- 事件：`event EventHandler<ExplorerWindowAbsorbedEventArgs> WindowAbsorbed`。`ExplorerWindowAbsorbedEventArgs` 含 `ParsingName` 与 `Absorbed`（宿主建好标签页后置 true，watcher 才关闭原窗口）。
+- 事件：`event EventHandler<ExplorerWindowAbsorbedEventArgs> WindowAbsorbed`。`ExplorerWindowAbsorbedEventArgs` 含 `ParsingName`、`SelectedPaths`（源窗口选中的项目路径，用于吸收后恢复选中）与 `Absorbed`（宿主建好标签页后置 true，watcher 才关闭原窗口）。
 
 **生命周期**：
 - `Start()`：若已 `_disposed` 则直接返回；否则启动 fallback timer；若非空则挂前台钩子。
@@ -156,6 +158,8 @@ ExplorerHubWinForms/
 
 **`GetFolderSelfProperty(dynamic window, bool path)`**：读取 `Document.Folder.Self` 的 `Path`/`Name`；`document`/`folder`/`self` 三级中间 RCW 在 `finally` 中显式释放，避免多次轮询后累积。
 
+**`GetSelectedPaths(dynamic window)`（本次新增）**：读取源窗口选中项路径。`window.Document.SelectedItems()` 返回 `FolderItems`，逐项取 `.Path`，空路径（虚拟项）跳过；`items`/`item` RCW 用后释放。读取必须在 `window.Quit()` 之前，结果随事件参数传给 `MainForm`。
+
 **`IsExplorerWindow(dynamic window, out long hwnd)`**：取 `FullName` 与 `ExplorerPath` 比较 + 取 `HWND` 转 long。
 
 **`Shell` 属性**：懒加载 `Type.GetTypeFromProgID("Shell.Application")` 实例。
@@ -166,6 +170,14 @@ ExplorerHubWinForms/
 - 两者都是一次拖拽生命周期内临时创建、松手即 `Dispose` 的顶层小窗；`Owner` 设为 `FindForm()`，`TopMost=true`，`ShowInTaskbar=false`，`AutoScaleMode.None`（按设备像素与标签矩形对齐，避免高 DPI 下变形），`CreateParams` 追加 `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`（不进任务栏/Alt-Tab、不激活、不抢鼠标捕获），并重写 `ShowWithoutActivation => true`。
 - `TabDragGhost`：承载一张标签头位图（`ClientSize=image.Size`，`Opacity=0.7`），`OnPaint` 里 `DrawImageUnscaled`；`Dispose` 时释放位图。影子内容由 `ExplorerTabControl.CreateTabImage` 自绘（底色 + 边框 + 标题文字），不依赖 `DrawToBitmap`。
 - `TabDropIndicator`：宽 2px、`BackColor=SystemColors.Highlight` 的竖线，`PlaceAt(screenTopLeft, height)` 设置 `Bounds`。
+
+### 3.8 `ShellItemSelector.cs`（让内嵌浏览器选中项目）
+- 背景：WindowsAPICodePack 没有公开的“选中项目”API，`ExplorerBrowser.SelectedItems` 只读。
+- 取视图：反射读取 `ExplorerBrowser` 的私有字段 `ExplorerBrowserControl`（内部 `IExplorerBrowser` 的 RCW），调用其公开的 `GetCurrentView(ref iid, out ptr)`；分别用 IID_IShellView(`000214E3-…`) / IID_IFolderView(`cde725b0-…`) 得到当前视图，`Marshal.GetObjectForIUnknown` 后由自定义 `[ComImport]` 接口接收。包固定在 8.0.6，该字段与 `GetCurrentView` 稳定（升级需复核）。
+- 选中：`IFolderView.GetFolder(IID_IShellFolder)` 取当前文件夹的 `IShellFolder`；对每个目标路径用**文件名** `IShellFolder.ParseDisplayName` 得到**文件夹相对**的子 PIDL；再 `IShellView.SelectItem(pidl, SVSI_SELECT|SVSI_DESELECTOTHERS|SVSI_ENSUREVISIBLE|SVSI_FOCUSED)`。最后释放 PIDL 与各 COM 对象。
+  - **关键坑**：`IShellView.SelectItem` 需要相对子 PIDL，传 `SHParseDisplayName` 得到的绝对 PIDL 会返回 `E_INVALIDARG`；`IFolderView.Item(i)` 返回的也是相对 PIDL。
+- `IsAtParentFolder(browser, paths)`：当前视图文件夹是否等于目标路径父目录，用于确认“导航到位”后再选（ExplorerBrowser 初始化时的桌面视图会先完成一次导航）。
+- 仅处理文件系统位置；虚拟项或父目录不匹配时跳过，任何失败静默返回 false。
 
 ## 4. 崩溃根因与已做修复（关键）
 
@@ -189,6 +201,7 @@ ExplorerHubWinForms/
 - **标签页默认打开“此电脑”**（失败退回桌面目录）。
 - **标签页可拖拽换位（桌面图标式）**：按住标签头拖动出现半透明影子跟随鼠标，竖直指示线标出落点，松开才落位；换位通过 `TabPages` 移除+插入实现，`ExplorerBrowser` 浏览状态应随之保留（若发现状态丢失，需改为换位后重导航）。
 - **同名标签区分（本次新增）**：末尾文件夹同名的多个标签，标题自动加父级括注（如 `2026-09-15 (慧医卡)`），父级也同名时自动上升一级；悬停任意标签显示完整路径（`ToolTipText = FullPath`，依赖 `TabControl.ShowToolTips=true`）；关闭重名标签后其余标题自动复原为纯叶子名。非文件系统位置（如“此电脑”）用显示名，若重名且无更多层级则以序号兜底。
+- **吸收后保留选中项（本次新增）**：别的软件“打开文件所在位置”打开的资源管理器窗口，源窗口里有选中项；`ExplorerWindowWatcher.GetSelectedPaths` 在关闭前读出这些路径，经事件参数/`AddTab` 传到标签页，导航到位后用 `ShellItemSelector` 选中。只对文件系统路径有效；普通打开文件夹无选中项，不受影响。
 - **`.cpl` 或非文件夹 shell 位置**：`ExplorerBrowser.Navigate` 会抛 `CommonControlException`，`Program.cs` 全局已忽略，`ExplorerTabPage.TryNavigate` 也捕获。
 - **常驻托盘**：关闭按钮隐藏到托盘缩略图标；缩小按钮缩到任务栏；仅托盘菜单“退出”真正退出。
 - **应用图标**：exe / 任务栏按钮 / Alt-Tab 缩略图与通知区域托盘图标统一使用 `app.ico`（多标签文件夹图标）。改图标需替换 `app.ico` 后重新编译（`ApplicationIcon` 写入 exe，`EmbeddedResource` 供运行时读取）。

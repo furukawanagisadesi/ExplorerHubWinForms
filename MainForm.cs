@@ -130,9 +130,9 @@ public sealed class MainForm : Form
         }
     }
 
-    public ExplorerTabPage AddTab(ShellObject? target)
+    public ExplorerTabPage AddTab(ShellObject? target, IReadOnlyList<string>? selectedPaths = null)
     {
-        var tab = new ExplorerTabPage(target ?? ComputerFolder);
+        var tab = new ExplorerTabPage(target ?? ComputerFolder, selectedPaths);
         tab.CurrentLocationChanged += OnTabLocationChanged;
         _tabs.TabPages.Add(tab);
         _tabs.SelectedTab = tab;
@@ -179,7 +179,7 @@ public sealed class MainForm : Form
                 }
             }
 
-            AddTab(target);
+            AddTab(target, e.SelectedPaths);
             ShowMainWindow();
 
             // 标签页已建好, 通知 watcher 可以安全关闭原资源管理器窗口。

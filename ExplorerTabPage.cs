@@ -22,6 +22,7 @@ public sealed class ExplorerTabPage : TabPage
     private string _displayName = "新标签页";
     private IReadOnlyList<string> _pathSegments = new[] { "新标签页" };
     private string _fullPath = string.Empty;
+    private IReadOnlyList<string> _pendingSelection = Array.Empty<string>();
 
     public ExplorerBrowser Browser => _browser;
 
@@ -37,8 +38,10 @@ public sealed class ExplorerTabPage : TabPage
     /// <summary>当前浏览位置变化时触发, 供宿主重算所有标签标题。</summary>
     public event EventHandler? CurrentLocationChanged;
 
-    public ExplorerTabPage(ShellObject? initialTarget)
+    public ExplorerTabPage(ShellObject? initialTarget, IReadOnlyList<string>? selectedPaths = null)
     {
+        _pendingSelection = selectedPaths ?? Array.Empty<string>();
+
         Padding = new Padding(0);
         UseVisualStyleBackColor = true;
 
@@ -179,6 +182,46 @@ public sealed class ExplorerTabPage : TabPage
     private void OnNavigationComplete(object? sender, NavigationCompleteEventArgs e)
     {
         UpdateNavigationState();
+        ApplyPendingSelection();
+    }
+
+    /// <summary>
+    /// 吸收“打开文件所在位置”这类窗口时, 导航完成后恢复源窗口的选中项。
+    /// NavigationComplete 时视图已创建(库内部就是在这时取 GetCurrentViewMode), 这里再排到
+    /// 消息队列末尾, 让视图先完成填充; 待选路径只尝试一次。
+    /// </summary>
+    private void ApplyPendingSelection()
+    {
+        if (_pendingSelection.Count == 0)
+        {
+            return;
+        }
+
+        var selection = _pendingSelection;
+
+        try
+        {
+            _browser.BeginInvoke((MethodInvoker)(() =>
+            {
+                if (_browser.IsDisposed || _pendingSelection.Count == 0)
+                {
+                    return;
+                }
+
+                // 等真正导航到目标文件夹再选: ExplorerBrowser 初始化时的桌面视图会先完成一次导航。
+                if (!ShellItemSelector.IsAtParentFolder(_browser, selection))
+                {
+                    return;
+                }
+
+                ShellItemSelector.TrySelect(_browser, selection);
+                _pendingSelection = Array.Empty<string>();
+            }));
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"恢复选中项失败: {ex}");
+        }
     }
 
     private void UpdateNavigationState()
