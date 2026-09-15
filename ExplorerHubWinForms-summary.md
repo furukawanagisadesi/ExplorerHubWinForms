@@ -1,7 +1,7 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）、桌面图标式拖拽换位（半透明影子 + 落点指示线，松手落位）”之后的状态。
 
 ## 1. 项目概览
 
@@ -23,6 +23,8 @@ ExplorerHubWinForms/
 ├── Program.cs                     # 入口：单实例互斥锁 + 异常处理兜底
 ├── MainForm.cs                    # 主窗体：TabControl + 工具栏 + 托盘 + 接线 + 标签标题计算
 ├── ExplorerTabControl.cs          # 自定义 TabControl：标签页双击关闭 + 拖拽换位
+├── TabDragGhost.cs                # 拖拽标签时跟随鼠标的半透明影子窗口
+├── TabDropIndicator.cs            # 拖拽时标出落点的竖直指示线窗口
 ├── ExplorerTabPage.cs             # 单个标签页：导航工具栏 + 原生 ExplorerBrowser（上报当前路径信息）
 └── ExplorerWindowWatcher.cs       # 监视并“吸收”资源管理器窗口的核心类（已含控制面板排除）
 ```
@@ -77,11 +79,18 @@ ExplorerHubWinForms/
 - 公开事件：`event EventHandler<int> TabDoubleClicked`（双击标签头→关闭）、`event EventHandler TabAreaDoubleClicked`（双击标签行空白处→新建）。
 - `HandleTabDoubleClick(Point clientPoint)`：双击命中判定（公共方法，两个窗口共用）。命中某标签矩形 → 触发 `TabDoubleClicked(index)`；否则若在标签行内（`y` 在标签行顶部与内容区上边缘之间，用 `DisplayRectangle.Top` 与 `GetTabRect(last).Top` 界定）→ 触发 `TabAreaDoubleClicked`。
 - **关键（本次修复后）**：标签头上的双击直接投递到本控件（子窗口）的 `WndProc`，**不会**经过父窗体；而标签行"空白处"的双击投递到 `MainForm`。因此关闭逻辑在 `ExplorerTabControl.WndProc` 处理（它只收得到标签头双击），新建逻辑由 `MainForm.WndProc` 转向调用 `HandleTabDoubleClick`（它只收得到空白处双击），两者互补、不重复投递。
-- **拖拽换位（本次新增）**：重写 `OnMouseDown/OnMouseMove/OnMouseUp`。
+- **拖拽换位（桌面图标式，本次重做）**：重写 `OnMouseDown/OnMouseMove/OnMouseUp`。
   - `OnMouseDown`：左键按下时用 `TabIndexAt`（遍历 `GetTabRect(i)` 命中判定）记住光标所在标签头索引 `_dragIndex`，记录起点 `_dragStart`；非左键则置 `_dragIndex=-1`。
-  - `OnMouseMove`：左键按住且命中标签时，位移超过 `SystemInformation.DragSize` 才判定为拖拽（`_dragging=true`）并 `Capture=true`；随后若光标进入另一个标签矩形（`TabIndexAt` 得到不同于 `_dragIndex` 的索引），调用 `MoveTab` 实时换位并更新 `_dragIndex`。用位移阈值区分单击/双击，`WM_LBUTTONDBLCLK` 仍走原 `WndProc`，拖拽与双击互不干扰。
-  - `OnMouseUp`：结束拖拽，`Capture=false`，复位状态。
-  - `MoveTab(from, to)`：`TabPages.RemoveAt(from)` → `TabPages.Insert(to, page)` → `SelectedTab=page`。TabControl 无公开移动方法，只能移除再插入；`TabPage` 移除时不销毁句柄、重新插入是重挂载，内嵌 `ExplorerBrowser` 状态应保留（需人工验证）。换位后让被拖标签保持选中。
+  - `OnMouseMove`：位移超过 `SystemInformation.DragSize` 才 `BeginDrag()`，之后调用 `UpdateDrag()`。用位移阈值区分单击/双击，`WM_LBUTTONDBLCLK` 仍走原 `WndProc`。
+  - `BeginDrag`：按被拖标签矩形 `CreateTabImage` 生成位图 → 建 `TabDragGhost`（半透明影子）与 `TabDropIndicator`（竖线）并显示，记录抓取偏移 `_grabOffset`；**最后** `Capture=true`（放在显示窗口之后，避免显示顶层窗时捕获被重置）。
+  - `UpdateDrag`：影子 `Location = Cursor.Position - _grabOffset` 跟随鼠标；`_dropIndex = ComputeDropIndex(cursor)`，再 `UpdateIndicator()`。
+  - `ComputeDropIndex`：按各标签**中点**求“去掉被拖标签后”的插入位置（可直接交给 `MoveTab`）。拖拽期间标签布局不变，所以索引稳定，不会像旧实时换位那样来回跳。
+  - `UpdateIndicator` / `OtherTabIndices`：按落点找到对应的标签边界（左缘或末尾的右缘），用 `PointToScreen` 换算成屏幕坐标后 `PlaceAt` 到指示线；被拖标签自身不参与。
+  - `OnMouseUp`：仅此刻结算一次 `ComputeDropIndex` 并 `MoveTab(from,to)`（`to==from` 不移动），随后 `EndDrag()` 清理影子/指示线、释放捕获。
+  - `OnMouseCaptureChanged`：拖拽中捕获被夺走（Alt+Tab 等）→ `EndDrag()` 取消。
+  - `Dispose`：兜底释放影子/指示线。
+  - 历史：先前版本是“实时换位”，在宽度不一的标签边界处会因无迟滞而疯狂闪烁；改为“影子 + 落点指示线、松手才落位”后，该问题从机制上消失。
+  - `MoveTab(from, to)`：`TabPages.RemoveAt(from)` → `TabPages.Insert(to, page)` → `SelectedTab=page`。TabControl 无公开移动方法，只能移除再插入；`TabPage` 移除时不销毁句柄、重新插入是重挂载，内嵌 `ExplorerBrowser` 状态应保留（需人工验证）。
 
 ### 3.5 `ExplorerTabPage.cs`（单个标签页）
 - 继承 `TabPage`。
@@ -153,6 +162,11 @@ ExplorerHubWinForms/
 
 **`IsExplorerProcess(IntPtr hwnd)`**：`GetWindowThreadProcessId` 取 PID，判断进程名是否为 `explorer`。
 
+### 3.7 `TabDragGhost.cs` / `TabDropIndicator.cs`（拖拽视觉）
+- 两者都是一次拖拽生命周期内临时创建、松手即 `Dispose` 的顶层小窗；`Owner` 设为 `FindForm()`，`TopMost=true`，`ShowInTaskbar=false`，`AutoScaleMode.None`（按设备像素与标签矩形对齐，避免高 DPI 下变形），`CreateParams` 追加 `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`（不进任务栏/Alt-Tab、不激活、不抢鼠标捕获），并重写 `ShowWithoutActivation => true`。
+- `TabDragGhost`：承载一张标签头位图（`ClientSize=image.Size`，`Opacity=0.7`），`OnPaint` 里 `DrawImageUnscaled`；`Dispose` 时释放位图。影子内容由 `ExplorerTabControl.CreateTabImage` 自绘（底色 + 边框 + 标题文字），不依赖 `DrawToBitmap`。
+- `TabDropIndicator`：宽 2px、`BackColor=SystemColors.Highlight` 的竖线，`PlaceAt(screenTopLeft, height)` 设置 `Bounds`。
+
 ## 4. 崩溃根因与已做修复（关键）
 
 ### 4.1 关闭标签页抛 `ObjectDisposedException`（已修复，`ExplorerTabPage.cs`）
@@ -173,7 +187,7 @@ ExplorerHubWinForms/
 - **控制面板不吸收**：控制面板窗口既不会被 `Quit()` 关闭，也不会变成标签页，保持原窗口正常存在。
 - **FTP 不吸收、交系统资源管理器（本次修改）**：地址栏输入 `ftp://` 时不在内嵌 `ExplorerBrowser` 打开（不带用户名会“此文件夹为空”，子目录/中文名会空白），也不在 app 内弹凭据框；改用 `Shell.Application.Open("<原样 ftp URL>")` 以地址栏方式新开系统资源管理器窗口（实测 `explorer.exe "ftp://..."` 会登录失败），后续凭据输入与浏览全由资源管理器负责。`ExplorerWindowWatcher` 用 `IsFtpWindow` 跳过所有 FTP 窗口，不吸收、不关闭，避免系统窗口被关掉又内嵌成空白。
 - **标签页默认打开“此电脑”**（失败退回桌面目录）。
-- **标签页可拖拽换位**：按住标签头左右拖动实时调整顺序；换位通过 `TabPages` 移除+插入实现，`ExplorerBrowser` 浏览状态应随之保留（若发现状态丢失，需改为换位后重导航）。
+- **标签页可拖拽换位（桌面图标式）**：按住标签头拖动出现半透明影子跟随鼠标，竖直指示线标出落点，松开才落位；换位通过 `TabPages` 移除+插入实现，`ExplorerBrowser` 浏览状态应随之保留（若发现状态丢失，需改为换位后重导航）。
 - **同名标签区分（本次新增）**：末尾文件夹同名的多个标签，标题自动加父级括注（如 `2026-09-15 (慧医卡)`），父级也同名时自动上升一级；悬停任意标签显示完整路径（`ToolTipText = FullPath`，依赖 `TabControl.ShowToolTips=true`）；关闭重名标签后其余标题自动复原为纯叶子名。非文件系统位置（如“此电脑”）用显示名，若重名且无更多层级则以序号兜底。
 - **`.cpl` 或非文件夹 shell 位置**：`ExplorerBrowser.Navigate` 会抛 `CommonControlException`，`Program.cs` 全局已忽略，`ExplorerTabPage.TryNavigate` 也捕获。
 - **常驻托盘**：关闭按钮隐藏到托盘缩略图标；缩小按钮缩到任务栏；仅托盘菜单“退出”真正退出。

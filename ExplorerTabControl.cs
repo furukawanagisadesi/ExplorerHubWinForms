@@ -12,7 +12,11 @@ public sealed class ExplorerTabControl : TabControl
 
     private int _dragIndex = -1;
     private Point _dragStart;
+    private Point _grabOffset;
     private bool _dragging;
+    private int _dropIndex = -1;
+    private TabDragGhost? _ghost;
+    private TabDropIndicator? _indicator;
 
     /// <summary>
     /// 标签头上的双击会直接投递到本控件(子窗口)的 WndProc, 不会经过父窗体。
@@ -83,7 +87,8 @@ public sealed class ExplorerTabControl : TabControl
     }
 
     /// <summary>
-    /// 拖拽标签头时实时换位: 光标进入另一个标签矩形就把被拖标签移过去, 产生跟手的换位效果。
+    /// 拖拽标签头: 超过阈值后出现跟随鼠标的半透明“影子”(类似桌面拖图标), 标签本身不动,
+    /// 另用竖直指示线标出松手后的落点; 松开鼠标才真正换位。
     /// </summary>
     protected override void OnMouseMove(MouseEventArgs e)
     {
@@ -99,34 +104,184 @@ public sealed class ExplorerTabControl : TabControl
                     return;
                 }
 
-                // 超过阈值才判定为拖拽, 并捕获鼠标, 避免快速拖动时消息丢给别的控件。
-                _dragging = true;
-                Capture = true;
+                // 超过阈值才判定为拖拽, 避免单击/双击被误判。
+                BeginDrag();
             }
 
-            var target = TabIndexAt(e.Location);
-            if (target >= 0 && target != _dragIndex)
-            {
-                MoveTab(_dragIndex, target);
-                _dragIndex = target;
-            }
+            UpdateDrag(e.Location);
         }
 
         base.OnMouseMove(e);
     }
 
-    /// <summary>松开鼠标结束拖拽, 并释放捕获。</summary>
+    /// <summary>超过拖拽阈值后启动拖拽: 造影子与指示线, 并捕获鼠标。</summary>
+    private void BeginDrag()
+    {
+        _dragging = true;
+
+        var rect = GetTabRect(_dragIndex);
+        _grabOffset = new Point(_dragStart.X - rect.Left, _dragStart.Y - rect.Top);
+
+        var owner = FindForm();
+
+        _ghost = new TabDragGhost(CreateTabImage(_dragIndex)) { Owner = owner };
+        _ghost.Show();
+
+        _indicator = new TabDropIndicator { Owner = owner };
+        _indicator.Show();
+
+        // 放在显示影子之后: 万一显示影子导致鼠标捕获变化, 这里再抢回来。
+        Capture = true;
+    }
+
+    /// <summary>让影子跟随鼠标, 并按当前落点更新竖直指示线。</summary>
+    private void UpdateDrag(Point cursor)
+    {
+        if (_ghost != null)
+        {
+            _ghost.Location = new Point(
+                Cursor.Position.X - _grabOffset.X,
+                Cursor.Position.Y - _grabOffset.Y);
+        }
+
+        _dropIndex = ComputeDropIndex(cursor);
+        UpdateIndicator();
+    }
+
+    /// <summary>松开鼠标: 只在此刻换位一次, 然后清理影子与指示线。</summary>
     protected override void OnMouseUp(MouseEventArgs e)
     {
         if (_dragging)
         {
+            var from = _dragIndex;
+            var to = ComputeDropIndex(e.Location);
+            EndDrag();
+
+            if (from >= 0 && from < TabCount && to != from)
+            {
+                MoveTab(from, to);
+            }
+        }
+        else
+        {
+            _dragIndex = -1;
+        }
+
+        base.OnMouseUp(e);
+    }
+
+    /// <summary>拖拽中若鼠标捕获被别处夺走(如 Alt+Tab), 取消本次拖拽并清理。</summary>
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        if (_dragging && !Capture)
+        {
+            EndDrag();
+        }
+
+        base.OnMouseCaptureChanged(e);
+    }
+
+    /// <summary>结束拖拽并释放影子、指示线与鼠标捕获。</summary>
+    private void EndDrag()
+    {
+        _dragging = false;
+        _dragIndex = -1;
+        _dropIndex = -1;
+
+        if (Capture)
+        {
             Capture = false;
         }
 
-        _dragIndex = -1;
-        _dragging = false;
+        _ghost?.Dispose();
+        _ghost = null;
+        _indicator?.Dispose();
+        _indicator = null;
+    }
 
-        base.OnMouseUp(e);
+    /// <summary>
+    /// 计算被拖标签的落点索引: 结果是“去掉被拖标签后”的插入位置, 可直接交给 MoveTab。
+    /// 拖拽期间标签布局不变, 所以该索引稳定, 不会像实时换位那样来回跳。
+    /// </summary>
+    private int ComputeDropIndex(Point cursor)
+    {
+        var position = 0;
+        for (var i = 0; i < TabCount; i++)
+        {
+            if (i == _dragIndex)
+            {
+                continue;
+            }
+
+            var rect = GetTabRect(i);
+            if (cursor.X < rect.Left + rect.Width / 2)
+            {
+                return position;
+            }
+
+            position++;
+        }
+
+        return position;
+    }
+
+    /// <summary>按当前落点把竖直指示线画到对应的标签边界上。</summary>
+    private void UpdateIndicator()
+    {
+        if (_indicator == null)
+        {
+            return;
+        }
+
+        var others = OtherTabIndices();
+        if (others.Count == 0)
+        {
+            return;
+        }
+
+        var anchor = others[Math.Min(_dropIndex, others.Count - 1)];
+        var anchorRect = GetTabRect(anchor);
+        var boundaryX = _dropIndex < others.Count ? anchorRect.Left : anchorRect.Right;
+
+        _indicator.PlaceAt(PointToScreen(new Point(boundaryX, anchorRect.Top)), anchorRect.Height);
+    }
+
+    /// <summary>除被拖标签外的所有标签索引, 保持原顺序。</summary>
+    private List<int> OtherTabIndices()
+    {
+        var list = new List<int>(TabCount);
+        for (var i = 0; i < TabCount; i++)
+        {
+            if (i != _dragIndex)
+            {
+                list.Add(i);
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>把某个标签头画成一张位图, 作为拖拽影子的内容。</summary>
+    private Bitmap CreateTabImage(int index)
+    {
+        var rect = GetTabRect(index);
+        var width = Math.Max(rect.Width, 1);
+        var height = Math.Max(rect.Height, 1);
+
+        var bitmap = new Bitmap(width, height);
+        using var g = Graphics.FromImage(bitmap);
+        g.FillRectangle(SystemBrushes.ControlLightLight, 0, 0, width, height);
+        g.DrawRectangle(SystemPens.ControlDark, 0, 0, width - 1, height - 1);
+        TextRenderer.DrawText(
+            g,
+            TabPages[index].Text,
+            Font,
+            new Rectangle(2, 0, Math.Max(width - 4, 1), height),
+            SystemColors.ControlText,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+        return bitmap;
     }
 
     /// <summary>命中光标所在的标签头索引; 不在任何标签头上返回 -1。</summary>
@@ -154,5 +309,19 @@ public sealed class ExplorerTabControl : TabControl
         TabPages.RemoveAt(from);
         TabPages.Insert(to, page);
         SelectedTab = page;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            // 拖拽中被销毁(如程序退出)时, 清掉可能还显示的影子与指示线。
+            _ghost?.Dispose();
+            _ghost = null;
+            _indicator?.Dispose();
+            _indicator = null;
+        }
+
+        base.Dispose(disposing);
     }
 }
