@@ -133,8 +133,10 @@ public sealed class MainForm : Form
     public ExplorerTabPage AddTab(ShellObject? target)
     {
         var tab = new ExplorerTabPage(target ?? ComputerFolder);
+        tab.CurrentLocationChanged += OnTabLocationChanged;
         _tabs.TabPages.Add(tab);
         _tabs.SelectedTab = tab;
+        UpdateTabTitles();
         return tab;
     }
 
@@ -199,6 +201,7 @@ public sealed class MainForm : Form
 
     private void CloseTab(ExplorerTabPage tab)
     {
+        tab.CurrentLocationChanged -= OnTabLocationChanged;
         _tabs.TabPages.Remove(tab);
         tab.Dispose();
 
@@ -207,6 +210,116 @@ public sealed class MainForm : Form
             // 没有标签页时, 隐藏到托盘继续后台运行(用于吸收资源管理器窗口)。
             Hide();
         }
+
+        UpdateTabTitles();
+    }
+
+    private void OnTabLocationChanged(object? sender, EventArgs e)
+    {
+        UpdateTabTitles();
+    }
+
+    /// <summary>
+    /// 统一重算所有标签的标题与悬停提示。平时显示叶子名; 出现同名标签时, 从叶子往上
+    /// 逐级追加父级, 取能让同名的一组标签互不相同的最小层级作为括注, 例如
+    /// "2026-09-15 (慧医卡)" 与 "2026-09-15 (光大)"; 连完整路径都相同(同一文件夹开了
+    /// 多个标签)时退化为序号。悬停提示始终是完整路径。
+    /// </summary>
+    private void UpdateTabTitles()
+    {
+        var pages = _tabs.TabPages.OfType<ExplorerTabPage>().ToList();
+
+        foreach (var page in pages)
+        {
+            page.ToolTipText = page.FullPath;
+        }
+
+        foreach (var group in pages.GroupBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase))
+        {
+            var members = group.ToList();
+            if (members.Count == 1)
+            {
+                members[0].Text = members[0].DisplayName;
+                continue;
+            }
+
+            var depth = FindDistinguishingDepth(members);
+            if (depth < 0)
+            {
+                // 完整路径也一致, 按出现顺序编号兜底(第一个保持叶子名)。
+                for (var i = 0; i < members.Count; i++)
+                {
+                    members[i].Text = i == 0
+                        ? members[i].DisplayName
+                        : $"{members[i].DisplayName} ({i + 1})";
+                }
+
+                continue;
+            }
+
+            // 优先只显示“最先区分开”的那一级祖先名; 若它们在组内仍会撞名, 就用完整祖先链。
+            var hints = members.Select(m => AncestorAtLevel(m, depth)).ToList();
+            var useChain = hints.Distinct(StringComparer.OrdinalIgnoreCase).Count() != hints.Count;
+
+            for (var i = 0; i < members.Count; i++)
+            {
+                var suffix = useChain ? AncestorChain(members[i], depth) : hints[i];
+                members[i].Text = $"{members[i].DisplayName} ({suffix})";
+            }
+        }
+    }
+
+    /// <summary>
+    /// 找到能让本组标签互不相同的最小父级层级(1 表示只加一级父级)。找不到返回 -1。
+    /// </summary>
+    private static int FindDistinguishingDepth(List<ExplorerTabPage> members)
+    {
+        var maxDepth = members.Max(p => p.PathSegments.Count - 1);
+        for (var depth = 1; depth <= maxDepth; depth++)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var unique = true;
+            foreach (var member in members)
+            {
+                if (!seen.Add(QualifiedName(member, depth)))
+                {
+                    unique = false;
+                    break;
+                }
+            }
+
+            if (unique)
+            {
+                return depth;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>取路径末尾 depth+1 级(叶子 + depth 级祖先)拼成的限定名。</summary>
+    private static string QualifiedName(ExplorerTabPage page, int depth)
+    {
+        var segments = page.PathSegments;
+        var take = Math.Min(depth + 1, segments.Count);
+        return string.Join("\\", segments.Skip(segments.Count - take));
+    }
+
+    /// <summary>取从叶子往上数第 depth 级的祖先名(即最先区分开的那一级)。</summary>
+    private static string AncestorAtLevel(ExplorerTabPage page, int depth)
+    {
+        var segments = page.PathSegments;
+        var index = segments.Count - 1 - depth;
+        return index >= 0 && index < segments.Count ? segments[index] : page.DisplayName;
+    }
+
+    /// <summary>取路径末尾 depth 级祖先拼成的链, 用于祖先名本身仍会撞名时的兜底。</summary>
+    private static string AncestorChain(ExplorerTabPage page, int depth)
+    {
+        var segments = page.PathSegments;
+        var end = segments.Count - 1;
+        var start = Math.Max(0, end - depth);
+        return start >= end ? page.DisplayName : string.Join("\\", segments.Skip(start).Take(end - start));
     }
 
     private void OnTabDoubleClicked(object? sender, int index)

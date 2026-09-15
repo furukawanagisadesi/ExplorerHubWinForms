@@ -19,8 +19,23 @@ public sealed class ExplorerTabPage : TabPage
     private readonly ToolStripTextBox _address;
     private readonly ToolStripButton _copyPath;
     private bool _updatingAddressWidth;
+    private string _displayName = "新标签页";
+    private IReadOnlyList<string> _pathSegments = new[] { "新标签页" };
+    private string _fullPath = string.Empty;
 
     public ExplorerBrowser Browser => _browser;
+
+    /// <summary>当前浏览位置的叶子名, 供宿主决定标签标题。</summary>
+    public string DisplayName => _displayName;
+
+    /// <summary>当前路径自根到叶的各级名称; 非文件系统位置只有叶子名。用于同名标签逐级区分。</summary>
+    public IReadOnlyList<string> PathSegments => _pathSegments;
+
+    /// <summary>完整路径, 用作标签悬停提示。</summary>
+    public string FullPath => _fullPath;
+
+    /// <summary>当前浏览位置变化时触发, 供宿主重算所有标签标题。</summary>
+    public event EventHandler? CurrentLocationChanged;
 
     public ExplorerTabPage(ShellObject? initialTarget)
     {
@@ -182,13 +197,46 @@ public sealed class ExplorerTabPage : TabPage
             if (location != null)
             {
                 _address.Text = location.IsFileSystemObject ? location.ParsingName : location.Name;
-                Text = string.IsNullOrEmpty(location.Name) ? "新标签页" : location.Name;
+                SetLocation(location);
             }
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"刷新导航状态失败: {ex}");
         }
+    }
+
+    /// <summary>
+    /// 记录当前位置的显示信息并通知宿主。标题不在这里直接设置——同名的多个标签要放在
+    /// 一起才能决定怎么区分, 统一交给 MainForm 计算。
+    /// </summary>
+    private void SetLocation(ShellObject location)
+    {
+        _displayName = string.IsNullOrEmpty(location.Name) ? "新标签页" : location.Name;
+        _fullPath = (location.IsFileSystemObject ? location.ParsingName : location.Name)
+            ?? string.Empty;
+        _pathSegments = BuildPathSegments(location);
+        CurrentLocationChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// 把当前路径拆成各级名称。文件系统用 ParsingName(如 D:\a\b)按分隔符拆分;
+    /// 控制面板等非文件系统位置没有稳定的路径层级, 只保留叶子名。
+    /// </summary>
+    private static IReadOnlyList<string> BuildPathSegments(ShellObject location)
+    {
+        if (location.IsFileSystemObject && !string.IsNullOrEmpty(location.ParsingName))
+        {
+            var parts = location.ParsingName.Split(
+                new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length > 0)
+            {
+                return parts;
+            }
+        }
+
+        var name = string.IsNullOrEmpty(location.Name) ? "新标签页" : location.Name;
+        return new[] { name };
     }
 
     private void NavigateUp()
