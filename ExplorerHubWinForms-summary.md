@@ -27,6 +27,7 @@ ExplorerHubWinForms/
 ├── TabDropIndicator.cs            # 拖拽时标出落点的竖直指示线窗口
 ├── ExplorerTabPage.cs             # 单个标签页：导航工具栏 + 原生 ExplorerBrowser（上报当前路径信息）
 ├── ShellItemSelector.cs           # 让内嵌 ExplorerBrowser 选中指定路径的项目（反射 + shell 互操作）
+├── TabTitlePlanner.cs             # 标签标题计算的纯逻辑（不依赖 WinForms，便于单独验证）
 └── ExplorerWindowWatcher.cs       # 监视并“吸收”资源管理器窗口的核心类（已含控制面板排除）
 ```
 
@@ -67,7 +68,7 @@ ExplorerHubWinForms/
 - **双击标签行空白处新建（本次新增）**：`WndProc` 中另处理 `WM_LBUTTONDBLCLK`（0x0203）——空白处双击会投递到本窗体（而非子控件），在此把本窗体客户区坐标经 `PointToScreen` → `PointToClient` 换算到 `_tabs` 客户区坐标，再调用 `_tabs.HandleTabDoubleClick(tabPoint)`。
 - 双击标签关闭（监听 `_tabs.TabDoubleClicked`，由 `ExplorerTabControl` 触发）。
 - **标签标题（本次新增）**：`AddTab` 订阅 `ExplorerTabPage.CurrentLocationChanged`；`AddTab` / `CloseTab` / 任一标签位置变化时统一调用 `UpdateTabTitles()`。
-  - `UpdateTabTitles()`：先把每个标签 `ToolTipText` 设为完整路径；再按 `DisplayName` 分组。未重名直接显示叶子名；重名时 `FindDistinguishingDepth` 找到能让该组互不相同的最小父级层级，标题显示成 `叶子名 (祖先名)`（如 `2026-09-15 (慧医卡)`）；若该级祖先名在组内仍撞名则退回完整祖先链（`AncestorChain`）；若完整路径也相同（同一文件夹开了多个标签）则按顺序编号兜底。辅助方法：`QualifiedName`（末 depth+1 级限定名）、`AncestorAtLevel`、`AncestorChain`。
+  - `UpdateTabTitles()`：先把每个标签 `ToolTipText` 设为完整路径；再按 `DisplayName` 分组，委托 `TabTitlePlanner.Plan` 计算标题。未重名直接显示叶子名；重名时**先在组内按完整路径拆子组**：路径不同的子组用 `FindDistinguishingDepth` 找到能让这些子组互不相同的最小父级层级，显示成 `叶子名 (祖先名)`（如 `2026-09-15 (慧医卡)`）；若该级祖先名仍撞名则退回完整祖先链（`AncestorChain`）；只有**完整路径完全相同**的子组（同一文件夹开了多个标签）无法靠父级名区分，才对这部分按出现顺序编号（`叶子名 (祖先名) (2)`）。辅助方法：`QualifiedName`（末 depth+1 级限定名）、`AncestorAtLevel`、`AncestorChain`。
 - `AddTab(ShellObject? target, IReadOnlyList<string>? selectedPaths = null)`：新建 `ExplorerTabPage`（默认“此电脑”，并把 `selectedPaths` 传下去用于恢复选中），订阅 `CurrentLocationChanged`，加入并选中后调用 `UpdateTabTitles()`。
 - `OnWindowAbsorbed`：程序退出中（`_exiting || IsDisposed || Disposing`）则忽略；否则把 `ParsingName` 转成 `ShellObject` 并 `AddTab(target, e.SelectedPaths)` 新增标签页（把源窗口选中项一并带入），然后 `ShowMainWindow()`；`file:///` URL 会转成本地路径；转换/识别失败则回退到“此电脑”。整个方法包在 try/catch 中，异常不会冒泡中断计时器驱动的吸收循环。**成功建好标签后设置 `e.Absorbed = true`**，watcher 据此才关闭原窗口（事务化吸收）。
 - `ShowMainWindow()`：若没有标签页则新建一个，然后显示并激活主窗；同上也做了退出中守卫。
@@ -206,7 +207,7 @@ ExplorerHubWinForms/
 - **FTP 不吸收、交系统资源管理器（本次修改）**：地址栏输入 `ftp://` 时不在内嵌 `ExplorerBrowser` 打开（不带用户名会“此文件夹为空”，子目录/中文名会空白），也不在 app 内弹凭据框；改用 `Shell.Application.Open("<原样 ftp URL>")` 以地址栏方式新开系统资源管理器窗口（实测 `explorer.exe "ftp://..."` 会登录失败），后续凭据输入与浏览全由资源管理器负责。`ExplorerWindowWatcher` 用 `IsFtpWindow` 跳过所有 FTP 窗口，不吸收、不关闭，避免系统窗口被关掉又内嵌成空白。
 - **标签页默认打开“此电脑”**（失败退回桌面目录）。
 - **标签页可拖拽换位（桌面图标式）**：按住标签头拖动出现半透明影子跟随鼠标，竖直指示线标出落点，松开才落位；换位通过 `TabPages` 移除+插入实现，`ExplorerBrowser` 浏览状态应随之保留（若发现状态丢失，需改为换位后重导航）。
-- **同名标签区分（本次新增）**：末尾文件夹同名的多个标签，标题自动加父级括注（如 `2026-09-15 (慧医卡)`），父级也同名时自动上升一级；悬停任意标签显示完整路径（`ToolTipText = FullPath`，依赖 `TabControl.ShowToolTips=true`）；关闭重名标签后其余标题自动复原为纯叶子名。非文件系统位置（如“此电脑”）用显示名，若重名且无更多层级则以序号兜底。
+- **同名标签区分（本次新增）**：末尾文件夹同名的多个标签，标题自动加父级括注（如 `2026-09-15 (慧医卡)`），父级也同名时自动上升一级；**同一文件夹开了多个标签（完整路径相同）时，只有这几个重复标签按顺序编号（`2026-09-15 (慧医卡) (2)`），其余不同路径的标签仍按父级括注区分**（修复前只要组内出现一对完全相同的路径，整组都会退化为编号）；悬停任意标签显示完整路径（`ToolTipText = FullPath`，依赖 `TabControl.ShowToolTips=true`）；关闭重名标签后其余标题自动复原为纯叶子名。非文件系统位置（如“此电脑”）用显示名，若重名且无更多层级则以序号兜底。计算逻辑抽到 `TabTitlePlanner`（纯函数）。
 - **吸收后保留选中项（本次新增）**：别的软件“打开文件所在位置”打开的资源管理器窗口，源窗口里有选中项；`ExplorerWindowWatcher.GetSelectedPaths` 在关闭前读出这些路径，经事件参数/`AddTab` 传到标签页，导航到位后用 `ShellItemSelector` 选中。只对文件系统路径有效；普通打开文件夹无选中项，不受影响。
 - **吸收尽量减轻“一闪而过”（本次新增）**：`EVENT_OBJECT_CREATE/SHOW` 钩子在新窗口创建时就把 explorer 窗口 `ShowWindow(SW_HIDE)`，之后 explorer 再显示就再隐藏，直到被吸收关闭；若判定不吸收（控制面板/FTP/建标签失败）或停止监视则 `Reveal` 还原。跨进程 DWM 遮蔽会 `E_ACCESSDENIED`，故用 `ShowWindow`。窗口隐藏期间仍能被 `Shell.Windows()` 枚举到，吸收照常进行（实测吸收约在 +0.8s 完成，期间窗口不可见）。**注意**：外线程隐藏受 WinEvent 投递延迟影响，可能残留极短闪；控制面板/FTP 这类“先隐藏再放行”的窗口会出现约几十毫秒的延迟（兜底轮询 1.5s）。
 - **代码审查后修复（本次）**：① `Start()` 先标记已有窗口（见上）；② 吸收后若 `Quit()` 超过 1s 窗口仍在，`CleanupClosing` 还原，避免原窗口被永久隐藏；③ 恢复选中在 `TrySelect` 成功前不清空，最多重试 5 次；④ `ExplorerTabPage` 导航事件与 `MainForm.UpdateTabTitles` 增加 UI 线程兜底；⑤ 拖拽落点改为按光标所在标签判定（多行标签条也正确）；⑥ `Poll` 对同一窗口只解析一次路径，`IsCabinetWindow` 复用缓冲，`OnForegroundChanged` 先按类名过滤以减少进程查询。

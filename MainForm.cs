@@ -243,92 +243,14 @@ public sealed class MainForm : Form
             page.ToolTipText = page.FullPath;
         }
 
-        foreach (var group in pages.GroupBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase))
+        var infos = pages
+            .Select(p => new TabTitlePlanner.TabInfo(p.DisplayName, p.FullPath, p.PathSegments))
+            .ToList();
+        var titles = TabTitlePlanner.Plan(infos);
+        for (var i = 0; i < pages.Count; i++)
         {
-            var members = group.ToList();
-            if (members.Count == 1)
-            {
-                members[0].Text = members[0].DisplayName;
-                continue;
-            }
-
-            var depth = FindDistinguishingDepth(members);
-            if (depth < 0)
-            {
-                // 完整路径也一致, 按出现顺序编号兜底(第一个保持叶子名)。
-                for (var i = 0; i < members.Count; i++)
-                {
-                    members[i].Text = i == 0
-                        ? members[i].DisplayName
-                        : $"{members[i].DisplayName} ({i + 1})";
-                }
-
-                continue;
-            }
-
-            // 优先只显示“最先区分开”的那一级祖先名; 若它们在组内仍会撞名, 就用完整祖先链。
-            var hints = members.Select(m => AncestorAtLevel(m, depth)).ToList();
-            var useChain = hints.Distinct(StringComparer.OrdinalIgnoreCase).Count() != hints.Count;
-
-            for (var i = 0; i < members.Count; i++)
-            {
-                var suffix = useChain ? AncestorChain(members[i], depth) : hints[i];
-                members[i].Text = $"{members[i].DisplayName} ({suffix})";
-            }
+            pages[i].Text = titles[i];
         }
-    }
-
-    /// <summary>
-    /// 找到能让本组标签互不相同的最小父级层级(1 表示只加一级父级)。找不到返回 -1。
-    /// </summary>
-    private static int FindDistinguishingDepth(List<ExplorerTabPage> members)
-    {
-        var maxDepth = members.Max(p => p.PathSegments.Count - 1);
-        for (var depth = 1; depth <= maxDepth; depth++)
-        {
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var unique = true;
-            foreach (var member in members)
-            {
-                if (!seen.Add(QualifiedName(member, depth)))
-                {
-                    unique = false;
-                    break;
-                }
-            }
-
-            if (unique)
-            {
-                return depth;
-            }
-        }
-
-        return -1;
-    }
-
-    /// <summary>取路径末尾 depth+1 级(叶子 + depth 级祖先)拼成的限定名。</summary>
-    private static string QualifiedName(ExplorerTabPage page, int depth)
-    {
-        var segments = page.PathSegments;
-        var take = Math.Min(depth + 1, segments.Count);
-        return string.Join("\\", segments.Skip(segments.Count - take));
-    }
-
-    /// <summary>取从叶子往上数第 depth 级的祖先名(即最先区分开的那一级)。</summary>
-    private static string AncestorAtLevel(ExplorerTabPage page, int depth)
-    {
-        var segments = page.PathSegments;
-        var index = segments.Count - 1 - depth;
-        return index >= 0 && index < segments.Count ? segments[index] : page.DisplayName;
-    }
-
-    /// <summary>取路径末尾 depth 级祖先拼成的链, 用于祖先名本身仍会撞名时的兜底。</summary>
-    private static string AncestorChain(ExplorerTabPage page, int depth)
-    {
-        var segments = page.PathSegments;
-        var end = segments.Count - 1;
-        var start = Math.Max(0, end - depth);
-        return start >= end ? page.DisplayName : string.Join("\\", segments.Skip(start).Take(end - start));
     }
 
     private void OnTabDoubleClicked(object? sender, int index)
