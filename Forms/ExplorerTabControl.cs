@@ -1,4 +1,4 @@
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Forms;
 
 public sealed class ExplorerTabControl : TabControl
 {

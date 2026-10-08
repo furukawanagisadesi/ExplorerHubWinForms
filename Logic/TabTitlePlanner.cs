@@ -1,4 +1,4 @@
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Logic;
 
 /// <summary>
 /// 计算标签标题的纯逻辑(不依赖 WinForms, 便于单独验证)。

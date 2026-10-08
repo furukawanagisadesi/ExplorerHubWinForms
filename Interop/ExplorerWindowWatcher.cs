@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Interop;
 
 public sealed class ExplorerWindowAbsorbedEventArgs : EventArgs
 {

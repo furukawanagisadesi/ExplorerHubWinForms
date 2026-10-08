@@ -1,4 +1,4 @@
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Forms;
 
 /// <summary>
 /// 拖拽标签时显示的“插入位置”竖直指示线。用独立小窗绘制, 可浮在原生 TabControl 之上,

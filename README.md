@@ -35,15 +35,20 @@ dotnet build
 
 ```
 ExplorerHubWinForms/
-├── ExplorerHubWinForms.csproj     # .NET 8 WinForms 项目，引用 WindowsAPICodePack
-├── Program.cs                     # 入口：异常处理兜底
-├── MainForm.cs                    # 主窗体：TabControl + 工具栏 + 托盘 + 接线 + 标签标题计算
-├── ExplorerTabControl.cs          # 自定义 TabControl：标签页双击关闭 + 拖拽换位
-├── TabDragGhost.cs                # 拖拽标签时跟随鼠标的半透明影子窗口
-├── TabDropIndicator.cs            # 拖拽时标出落点的竖直指示线窗口
-├── ExplorerTabPage.cs             # 单个标签页：导航工具栏 + 原生 ExplorerBrowser（上报当前路径信息）
-├── ShellItemSelector.cs          # 让内嵌 ExplorerBrowser 选中指定路径的项目（反射 + shell 互操作）
-└── ExplorerWindowWatcher.cs       # 监视并“吸收”资源管理器窗口的核心类（创建即隐藏，消除闪烁）
+├── ExplorerHubWinForms.csproj     # .NET 8 WinForms 工程, 固定引用 WindowsAPICodePack 8.0.6
+├── Program.cs                     # 入口: 单实例互斥 + 全局异常处理
+├── app.ico                        # 多分辨率应用图标(嵌入程序集)
+├── Forms/
+│   ├── MainForm.cs                # 主窗体: 工具栏 + 托盘 + 标签页编排 + 标签标题重算
+│   ├── ExplorerTabControl.cs      # 自定义 TabControl: 双击关闭 + 拖拽换位
+│   ├── ExplorerTabPage.cs         # 单个标签页: 导航工具栏 + 原生 ExplorerBrowser
+│   ├── TabDragGhost.cs            # 拖拽标签时跟随鼠标的半透明影子窗口
+│   └── TabDropIndicator.cs        # 拖拽时的竖直插入位置指示线
+├── Interop/
+│   ├── ExplorerWindowWatcher.cs   # 监视并吸收系统资源管理器窗口(含还原被隐藏窗口)
+│   └── ShellItemSelector.cs       # 反射 + shell 接口, 在 ExplorerBrowser 中选中指定路径
+└── Logic/
+    └── TabTitlePlanner.cs         # 标签标题去重纯逻辑(同名标签逐级区分)
 ```
 
 ## 使用说明

@@ -1,6 +1,8 @@
+using ExplorerHubWinForms.Interop;
+using ExplorerHubWinForms.Logic;
 using Microsoft.WindowsAPICodePack.Shell;
 
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Forms;
 
 /// <summary>
 /// 主窗体: 原生 TabControl, 每个标签页承载一个原生 ExplorerBrowser。

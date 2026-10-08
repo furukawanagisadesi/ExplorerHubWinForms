@@ -2,7 +2,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.WindowsAPICodePack.Controls.WindowsForms;
 
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Interop;
 
 /// <summary>
 /// 让内嵌 ExplorerBrowser 选中指定路径的项目。WindowsAPICodePack 没有公开的选中 API;

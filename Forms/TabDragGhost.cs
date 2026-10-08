@@ -1,4 +1,4 @@
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Forms;
 
 /// <summary>
 /// 拖拽标签时跟随鼠标的半透明“影子”窗口, 效果类似桌面拖动图标。

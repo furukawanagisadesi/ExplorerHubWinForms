@@ -2,9 +2,10 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.WindowsAPICodePack.Controls;
 using Microsoft.WindowsAPICodePack.Controls.WindowsForms;
+using ExplorerHubWinForms.Interop;
 using Microsoft.WindowsAPICodePack.Shell;
 
-namespace ExplorerHubWinForms;
+namespace ExplorerHubWinForms.Forms;
 
 /// <summary>
 /// 单个标签页: 顶部导航工具栏 + 原生 IExplorerBrowser。

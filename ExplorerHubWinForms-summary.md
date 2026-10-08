@@ -1,7 +1,7 @@
 # ExplorerHubWinForms — 项目摘要（供 Agent 使用）
 
 > 用途：把一个 WinForms 的“多标签页资源管理器”的现状、结构、关键逻辑和已做的修改整理成一份可被另一个 Agent 直接消费的说明。
-> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）、桌面图标式拖拽换位（半透明影子 + 落点指示线，松手落位）、吸收后保留选中项（“打开文件所在位置”吸收后仍选中该文件）、吸收时窗口创建即隐藏（尽量减轻“一闪而过”）、代码审查修复（吸收/选中/线程/拖拽等）”之后的状态。
+> 生成时点：在完成“关闭标签页崩溃修复、吸收竞态加固、多屏窗口大小、单实例、缩小到任务栏/关闭到托盘、地址栏宽度自适应、吸收事务化与 COM 释放加固、依赖版本固定（WindowsAPICodePack 8.0.6，修复复制粘贴与大目录假死）、应用图标（多标签文件夹图标，任务栏 + 通知区域）、FTP 交系统资源管理器浏览（app 用 Shell.Application.Open 以“地址栏”方式新开系统资源管理器交给它执行，凭据/后续操作全由资源管理器负责，watcher 不吸收 FTP 窗口）、标签页拖拽换位、同名标签自动区分（重名时加父级括注 + 悬停完整路径）、桌面图标式拖拽换位（半透明影子 + 落点指示线，松手落位）、吸收后保留选中项（“打开文件所在位置”吸收后仍选中该文件）、吸收时窗口创建即隐藏（尽量减轻“一闪而过”）、代码审查修复（吸收/选中/线程/拖拽等）、项目按职责整理为 Forms/ Interop/ Logic/ 三个目录（命名空间与目录一一对应）”之后的状态。
 
 ## 1. 项目概览
 
@@ -20,15 +20,18 @@
 ExplorerHubWinForms/
 ├── ExplorerHubWinForms.csproj     # .NET 8 WinForms 项目，引用 WindowsAPICodePack
 ├── app.ico                        # 应用图标（多分辨率 16~256）
-├── Program.cs                     # 入口：单实例互斥锁 + 异常处理兜底
-├── MainForm.cs                    # 主窗体：TabControl + 工具栏 + 托盘 + 接线 + 标签标题计算
-├── ExplorerTabControl.cs          # 自定义 TabControl：标签页双击关闭 + 拖拽换位
-├── TabDragGhost.cs                # 拖拽标签时跟随鼠标的半透明影子窗口
-├── TabDropIndicator.cs            # 拖拽时标出落点的竖直指示线窗口
-├── ExplorerTabPage.cs             # 单个标签页：导航工具栏 + 原生 ExplorerBrowser（上报当前路径信息）
-├── ShellItemSelector.cs           # 让内嵌 ExplorerBrowser 选中指定路径的项目（反射 + shell 互操作）
-├── TabTitlePlanner.cs             # 标签标题计算的纯逻辑（不依赖 WinForms，便于单独验证）
-└── ExplorerWindowWatcher.cs       # 监视并“吸收”资源管理器窗口的核心类（已含控制面板排除）
+├── Program.cs                     # 入口：单实例互斥锁 + 异常处理兜底（命名空间 ExplorerHubWinForms）
+├── Forms/                         # UI（命名空间 ExplorerHubWinForms.Forms）
+│   ├── MainForm.cs                # 主窗体：TabControl + 工具栏 + 托盘 + 接线 + 标签标题计算
+│   ├── ExplorerTabControl.cs      # 自定义 TabControl：标签页双击关闭 + 拖拽换位
+│   ├── ExplorerTabPage.cs         # 单个标签页：导航工具栏 + 原生 ExplorerBrowser（上报当前路径信息）
+│   ├── TabDragGhost.cs            # 拖拽标签时跟随鼠标的半透明影子窗口
+│   └── TabDropIndicator.cs        # 拖拽时标出落点的竖直指示线窗口
+├── Interop/                       # Windows/shell 互操作（命名空间 ExplorerHubWinForms.Interop）
+│   ├── ExplorerWindowWatcher.cs   # 监视并“吸收”资源管理器窗口的核心类（已含控制面板排除）
+│   └── ShellItemSelector.cs       # 让内嵌 ExplorerBrowser 选中指定路径的项目（反射 + shell 互操作）
+└── Logic/                         # 纯逻辑（命名空间 ExplorerHubWinForms.Logic）
+    └── TabTitlePlanner.cs         # 标签标题计算的纯逻辑（不依赖 WinForms，便于单独验证）
 ```
 
 ## 3. 各文件职责与关键逻辑
@@ -49,7 +52,7 @@ ExplorerHubWinForms/
 - 设置全局异常兜底：`UnhandledExceptionMode.CatchException` + `ThreadException` + `AppDomain.UnhandledException`。
 - `ShowError`：若异常是 `Microsoft.WindowsAPICodePack.Controls.CommonControlException` 则直接忽略（这类错误是 ExplorerBrowser 无法浏览某些 shell 对象如控制面板 `.cpl` 小程序导致，它们本就不是文件夹）；其它异常弹 `MessageBox`。
 
-### 3.3 `MainForm.cs`（主窗体）
+### 3.3 `Forms/MainForm.cs`（主窗体）
 - 成员：
   - `ExplorerTabControl _tabs`（内容区，`Dock=Fill`）
   - `ExplorerWindowWatcher _watcher = new()`
@@ -76,7 +79,7 @@ ExplorerHubWinForms/
 - `ExitApplication()`：`_exiting=true`、隐藏托盘、`Close()`。
 - `Dispose`：取消事件、释放 watcher 和托盘。
 
-### 3.4 `ExplorerTabControl.cs`
+### 3.4 `Forms/ExplorerTabControl.cs`
 - 继承 `TabControl`，重写 `WndProc` 处理 `WM_LBUTTONDBLCLK`（0x0203），因为 TabControl 会把标签头上的双击事件内部消化。
 - 公开事件：`event EventHandler<int> TabDoubleClicked`（双击标签头→关闭）、`event EventHandler TabAreaDoubleClicked`（双击标签行空白处→新建）。
 - `HandleTabDoubleClick(Point clientPoint)`：双击命中判定（公共方法，两个窗口共用）。命中某标签矩形 → 触发 `TabDoubleClicked(index)`；否则若在标签行内（`y` 在标签行顶部与内容区上边缘之间，用 `DisplayRectangle.Top` 与 `GetTabRect(last).Top` 界定）→ 触发 `TabAreaDoubleClicked`。
@@ -94,7 +97,7 @@ ExplorerHubWinForms/
   - 历史：先前版本是“实时换位”，在宽度不一的标签边界处会因无迟滞而疯狂闪烁；改为“影子 + 落点指示线、松手才落位”后，该问题从机制上消失。
   - `MoveTab(from, to)`：`TabPages.RemoveAt(from)` → `TabPages.Insert(to, page)` → `SelectedTab=page`。TabControl 无公开移动方法，只能移除再插入；`TabPage` 移除时不销毁句柄、重新插入是重挂载，内嵌 `ExplorerBrowser` 状态应保留（需人工验证）。
 
-### 3.5 `ExplorerTabPage.cs`（单个标签页）
+### 3.5 `Forms/ExplorerTabPage.cs`（单个标签页）
 - 继承 `TabPage`。
 - 持有：`ExplorerBrowser _browser`（`Dock=Fill`）、导航工具栏（后退/前进/上一级/刷新/地址框/复制路径）。
 - **位置信息上报（本次新增）**：不再自行设置标签标题（原先在 `UpdateNavigationState` 里 `Text = location.Name` 已移除），改为暴露 `DisplayName`（叶子名）、`PathSegments`（文件系统按 `ParsingName` 分隔符拆分的各级名，非文件系统只有叶子名）、`FullPath`（悬停提示用完整路径），并在位置变化时触发 `CurrentLocationChanged` 事件，由 `MainForm` 统一计算标题。 注意事件名不能叫 `LocationChanged`——`Control` 已有同名事件。解析见 `SetLocation` / `BuildPathSegments`。
@@ -113,7 +116,7 @@ ExplorerHubWinForms/
 - 刷新：重新导航到当前目录（`NavigateLogLocation` 到相同索引是空操作，需重导航）。
 - **`Dispose`（修复）**：除了取消 `NavigationLogChanged` / `NavigationComplete` 事件，还调用 `Application.RemoveMessageFilter(_browser)`——见下方第 4 节崩溃根因。
 
-### 3.6 `ExplorerWindowWatcher.cs`（核心：监视并吸收 explorer 窗口）
+### 3.6 `Interop/ExplorerWindowWatcher.cs`（核心：监视并吸收 explorer 窗口）
 > ⚠️ 这是本项目中“吸收窗口”的唯一入口。
 
 **整体机制**：
@@ -173,12 +176,12 @@ ExplorerHubWinForms/
 
 **`IsExplorerProcess(IntPtr hwnd)`**：`GetWindowThreadProcessId` 取 PID，判断进程名是否为 `explorer`。
 
-### 3.7 `TabDragGhost.cs` / `TabDropIndicator.cs`（拖拽视觉）
+### 3.7 `Forms/TabDragGhost.cs` / `Forms/TabDropIndicator.cs`（拖拽视觉）
 - 两者都是一次拖拽生命周期内临时创建、松手即 `Dispose` 的顶层小窗；`Owner` 设为 `FindForm()`，`TopMost=true`，`ShowInTaskbar=false`，`AutoScaleMode.None`（按设备像素与标签矩形对齐，避免高 DPI 下变形），`CreateParams` 追加 `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`（不进任务栏/Alt-Tab、不激活、不抢鼠标捕获），并重写 `ShowWithoutActivation => true`。
 - `TabDragGhost`：承载一张标签头位图（`ClientSize=image.Size`，`Opacity=0.7`），`OnPaint` 里 `DrawImageUnscaled`；`Dispose` 时释放位图。影子内容由 `ExplorerTabControl.CreateTabImage` 自绘（底色 + 边框 + 标题文字），不依赖 `DrawToBitmap`。
 - `TabDropIndicator`：宽 2px、`BackColor=SystemColors.Highlight` 的竖线，`PlaceAt(screenTopLeft, height)` 设置 `Bounds`。
 
-### 3.8 `ShellItemSelector.cs`（让内嵌浏览器选中项目）
+### 3.8 `Interop/ShellItemSelector.cs`（让内嵌浏览器选中项目）
 - 背景：WindowsAPICodePack 没有公开的“选中项目”API，`ExplorerBrowser.SelectedItems` 只读。
 - 取视图：反射读取 `ExplorerBrowser` 的私有字段 `ExplorerBrowserControl`（内部 `IExplorerBrowser` 的 RCW），调用其公开的 `GetCurrentView(ref iid, out ptr)`；分别用 IID_IShellView(`000214E3-…`) / IID_IFolderView(`cde725b0-…`) 得到当前视图，`Marshal.GetObjectForIUnknown` 后由自定义 `[ComImport]` 接口接收。包固定在 8.0.6，该字段与 `GetCurrentView` 稳定（升级需复核）。
 - 选中：`IFolderView.GetFolder(IID_IShellFolder)` 取当前文件夹的 `IShellFolder`；对每个目标路径用**文件名** `IShellFolder.ParseDisplayName` 得到**文件夹相对**的子 PIDL；再 `IShellView.SelectItem(pidl, SVSI_SELECT|SVSI_DESELECTOTHERS|SVSI_ENSUREVISIBLE|SVSI_FOCUSED)`。最后释放 PIDL 与各 COM 对象。
@@ -186,9 +189,14 @@ ExplorerHubWinForms/
 - `IsAtParentFolder(browser, paths)`：当前视图文件夹是否等于目标路径父目录，用于确认“导航到位”后再选（ExplorerBrowser 初始化时的桌面视图会先完成一次导航）。
 - 仅处理文件系统位置；虚拟项或父目录不匹配时跳过，任何失败静默返回 false。
 
+### 3.9 `Logic/TabTitlePlanner.cs`（标签标题纯逻辑）
+- 不依赖 WinForms 的静态类。输入各标签的 `TabInfo(DisplayName, FullPath, PathSegments)`，输出与输入顺序一一对应的标题列表；由 `MainForm.UpdateTabTitles` 调用。
+- `Plan`：先按 `DisplayName` 分组，唯一名直接显示叶子名。重名组内再按 `FullPath` 拆子组：路径不同时用 `FindDistinguishingDepth` 求能让各子组互不相同的最小父级层级（`QualifiedName` 取末 depth+1 级限定名比较），命中则显示成 `叶子名 (祖先名)`；若该级祖先名仍撞名则退回完整祖先链（`AncestorChain`）。只有**完整路径完全相同**的子组无法靠父级名区分，才对这部分按出现顺序在组内编号（`叶子名 (祖先名) (2)`）。
+- 对应 `MainForm` 的标题逻辑，抽成纯函数以便脱离 UI 单独验证。
+
 ## 4. 崩溃根因与已做修复（关键）
 
-### 4.1 关闭标签页抛 `ObjectDisposedException`（已修复，`ExplorerTabPage.cs`）
+### 4.1 关闭标签页抛 `ObjectDisposedException`（已修复，`Forms/ExplorerTabPage.cs`）
 - **根因**：WindowsAPICodePack 的 `ExplorerBrowser` 在创建窗口句柄时把自己注册为 `Application.AddMessageFilter`（实现了 `IMessageFilter`），但其 `Dispose` 并不会反注册。关闭标签页 Dispose 该控件后，它仍留在 WinForms 全局消息过滤器链中；消息循环泵下一帧时 `ProcessFilters` 回调 `IsMessageForExplorerBrowser` → 访问已释放控件的 `Control.Handle` → 抛 `ObjectDisposedException`。
 - **修复**：在 `ExplorerTabPage.Dispose(bool)` 释放控件前调用 `Application.RemoveMessageFilter(_browser)`。
 
